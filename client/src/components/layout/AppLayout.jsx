@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation, NavLink } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import { ChevronLeft, ChevronRight, ArrowLeft, ArrowRight, Menu } from 'lucide-react';
-import * as Icons from 'lucide-react';
 import { sidebarGroups } from '../../config/mastersConfig';
 
 export default function AppLayout() {
@@ -58,7 +57,9 @@ export default function AppLayout() {
           height: '52px',
           position: 'sticky',
           top: 0,
-          zIndex: 90
+          zIndex: 90,
+          flexWrap: 'nowrap',
+          overflow: 'hidden'
         }}>
           {/* Back & Forward History Buttons */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -178,3 +179,5 @@ export default function AppLayout() {
     </div>
   );
 }
+
+// HeaderFilter removed: global filter option disabled across pages

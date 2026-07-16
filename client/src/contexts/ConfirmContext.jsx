@@ -28,8 +28,8 @@ export function ConfirmProvider({ children }) {
     <ConfirmContext.Provider value={confirm}>
       {children}
       {state && (
-        <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="confirm-dialog">
+        <div className="modal-overlay" role="dialog" aria-modal="true" onClick={() => handle(false)}>
+          <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
             <div className={`confirm-icon ${state.danger ? 'danger' : ''}`}>
               <AlertTriangle size={22} />
             </div>

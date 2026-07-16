@@ -99,6 +99,16 @@ function FieldInput({ field, value, onChange, formData }) {
   if (field.type === 'select') {
     let rawOptions = field.refEndpoint ? refOptions : field.options || [];
 
+    if (field.name === 'productTypeId' && field.refEndpoint === 'product-types') {
+      const allowedLabels = ['none', 'asset', 'consumables'];
+      rawOptions = (rawOptions || []).filter((opt) => {
+        const label = opt && typeof opt === 'object'
+          ? (opt.productType || opt.label || opt.name || '')
+          : String(opt);
+        return allowedLabels.includes(label.toLowerCase());
+      });
+    }
+
     if (field.dependsOn && formData) {
       const dependentValues = getPath(formData, field.dependsOn);
       if (Array.isArray(dependentValues) && dependentValues.length > 0) {
@@ -303,8 +313,8 @@ export default function MasterFormModal({ config, initialData, onClose, onSaved,
   };
 
   return (
-    <div className="modal-overlay">
-      <div className={`modal-panel ${config.fields && config.fields.length <= 2 ? 'modal-narrow' : ''}`}>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className={`modal-panel ${config.fields && config.fields.length <= 2 ? 'modal-narrow' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <h3 style={{ margin: 0 }}>{isEdit ? `Edit ${config.title}` : `Add ${config.title}`}</h3>

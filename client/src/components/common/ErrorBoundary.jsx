@@ -18,8 +18,8 @@ export default class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="modal-overlay">
-          <div className="modal-panel modal-narrow">
+        <div className="modal-overlay" onClick={() => this.setState({ hasError: false, error: null })}>
+          <div className="modal-panel modal-narrow" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Something went wrong</h3>
             </div>

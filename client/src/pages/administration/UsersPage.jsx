@@ -37,8 +37,8 @@ function UserFormModal({ user, roles, onClose, onSaved, toast }) {
   };
 
   return (
-    <div className="modal-overlay">
-      <div className="modal-panel">
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>{isEdit ? 'Edit User' : 'Add User'}</h3>
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
@@ -149,6 +149,7 @@ export default function UsersPage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th>S. No</th>
                   <th>Name</th>
                   <th>Email</th>
                   <th>Role</th>
@@ -157,8 +158,9 @@ export default function UsersPage() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
+                {users.map((u, idx) => (
                   <tr key={u._id}>
+                    <td>{idx + 1}</td>
                     <td>{u.name}</td>
                     <td>{u.email}</td>
                     <td>{u.role?.name || '—'}</td>

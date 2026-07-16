@@ -42,6 +42,7 @@ export default function AuditLogsPage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th>S. No</th>
                   <th>Date</th>
                   <th>User</th>
                   <th>Action</th>
@@ -50,8 +51,9 @@ export default function AuditLogsPage() {
                 </tr>
               </thead>
               <tbody>
-                {logs.map((log) => (
+                {logs.map((log, idx) => (
                   <tr key={log._id}>
+                    <td>{(page - 1) * pageSize + idx + 1}</td>
                     <td>{new Date(log.createdAt).toLocaleString()}</td>
                     <td>{log.userName || log.user?.name || '—'}</td>
                     <td><span className={`badge badge-${log.action === 'delete' ? 'danger' : log.action === 'create' ? 'success' : 'muted'}`}>{log.action}</span></td>

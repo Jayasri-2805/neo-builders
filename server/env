@@ -1,0 +1,29 @@
+PORT=8001
+# Use local MongoDB for development instead of remote Atlas
+# MONGODB_URI=mongodb+srv://mani001:admin@cluster0.tzie1yt.mongodb.net/realestate?retryWrites=true&w=majority
+# MONGODB_URI=mongodb://127.0.0.1:27017/neobuilders
+MONGODB_URI=mongodb://localhost:27017/realestate
+JWT_SECRET=realestate123
+
+
+
+# Email sent otp and others
+EMAIL_HOST=neophrondev.in
+EMAIL_PORT=465
+EMAIL_SECURE=true
+EMAIL_USER=no-reply@neophrondev.in
+EMAIL_PASS=Neophron@2026
+EMAIL_FROM=no-reply@neophrondev.in
+EMAIL_ENCRYPTION=ssl
+EMAIL_MAILER=smtp
+
+
+# https://aiwhatsappapi.neophrontech.com/v1/message/send-message
+# Common WhatsApp API Settings (Used across all templates)
+NEO_WHATSAPP_API_URL=https://aiwhatsappapi.neophrontech.com/v1/message/send-message
+NEO_WHATSAPP_API_TOKEN=d3d83027de2a5857355422300c358ed63e1a3ec57dfec327b52b31973fc35b18c0f1bd9d1dd4501d81b70a5b3167b3205cc3323b9825b049b97aaa601beb37e8
+NEO_WHATSAPP_LANGUAGE=en
+NEO_WHATSAPP_BUTTON_INDEX=0
+
+# Template Names
+NEO_OTP_TEMPLATE_NAME=otp_verification

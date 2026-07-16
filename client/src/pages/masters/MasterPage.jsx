@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useParams, NavLink, useLocation } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Plus, Search, Pencil, Trash2, Power, X } from 'lucide-react';
 import * as Icons from 'lucide-react';
 import { mastersConfig, sidebarGroups } from '../../config/mastersConfig';
@@ -32,6 +32,8 @@ export default function MasterPage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [filters, setFilters] = useState({});
+  const [filterOptions, setFilterOptions] = useState({});
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [pageSize] = useState(10);
@@ -39,24 +41,77 @@ export default function MasterPage() {
   const [editingRow, setEditingRow] = useState(null);
   const [viewingRow, setViewingRow] = useState(null);
   const [showSearch, setShowSearch] = useState(false);
+  const navigate = useNavigate();
+
+  const handleQuoteClick = (row) => {
+    navigate(`/requests?requestId=${row._id}&quotation=true`);
+  };
+
+  useEffect(() => {
+    const handleFilterText = (e) => {
+      const val = e.detail || '';
+      setSearch(val);
+      setPage(1);
+      setShowSearch(Boolean(val));
+    };
+    window.addEventListener('filter-text', handleFilterText);
+    return () => window.removeEventListener('filter-text', handleFilterText);
+  }, []);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.list({ page, limit: pageSize, search });
+      const params = { page, limit: pageSize };
+      if (search) params.search = search;
+      // include non-empty filters
+      Object.keys(filters || {}).forEach(k => {
+        const v = filters[k];
+        if (v && v !== 'All') params[k] = v;
+      });
+      const { data } = await api.list(params);
       setRows(data.data || []);
       setTotal(data.meta?.total ?? (data.data || []).length);
-    } catch {
+    } catch (err) {
+      console.error('Fetch data error', err);
       toast.error(`Failed to load ${config.plural.toLowerCase()}`);
     } finally {
       setLoading(false);
     }
-  }, [api, page, pageSize, search, config.plural, toast]);
+  }, [api, page, pageSize, search, config.plural, toast, filters]);
 
   useEffect(() => {
     setPage(1);
     setRows([]);
   }, [slug]);
+
+  // Load filter options for select fields (fetch referenced masters)
+  useEffect(() => {
+    let mounted = true;
+    const loadOptions = async () => {
+      if (!config || !config.fields) return;
+      const opts = {};
+      const promises = config.fields.map(async (f) => {
+        if (f.refEndpoint) {
+          try {
+            const apiClient = createMasterApi(f.refEndpoint);
+            const res = await apiClient.listAll();
+            if (res.data && Array.isArray(res.data.data)) {
+              const items = res.data.data.map(it => ({ label: it[f.refLabel] || it.name || it.siteName || it.priorityName || it.productType || it.categoryName || it.uomName, value: it._id }));
+              opts[f.name] = items;
+            }
+          } catch (err) {
+            console.error('Failed to load options for', f.refEndpoint, err);
+          }
+        } else if (Array.isArray(f.options) && f.options.length) {
+          opts[f.name] = f.options.map(o => ({ label: o.label, value: o.value }));
+        }
+      });
+      await Promise.all(promises);
+      if (mounted) setFilterOptions(opts);
+    };
+    loadOptions();
+    return () => { mounted = false; };
+  }, [config]);
 
   useEffect(() => {
     fetchData();
@@ -90,16 +145,18 @@ export default function MasterPage() {
   };
 
   const renderCell = (row, col) => {
+    if (col.type === 'action') return null;
     const value = getPath(row, col.key);
     if (col.type === 'ref') {
       if (!value) return '—';
-      return value.departmentName || value.designationName || value.categoryName || value.uomName ||
+      return value.productType || value.departmentName || value.designationName || value.categoryName || value.uomName ||
         value.siteName || value.siteType || value.vehicleType || value.name || value.empName || '—';
     }
     if (value === undefined || value === null || value === '') return '—';
     return String(value);
   };
 
+  const showStatusBadge = config.showStatusBadge !== false;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
@@ -166,24 +223,71 @@ export default function MasterPage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th>S. No</th>
                   {config.columns.map((col) => (
                     <th key={col.key}>{col.label}</th>
                   ))}
-                  <th style={{ width: '120px' }}>Status</th>
+                  {showStatusBadge && <th style={{ width: '120px' }}>Status</th>}
                   <th className="col-actions">Actions</th>
                 </tr>
+                {slug === 'purchase-indents' && (
+                  <tr className="filters-row">
+                    <th />
+                    {config.columns.map((col) => (
+                      <th key={col.key}>
+                        {(() => {
+                          const fld = config.fields && config.fields.find(f => f.name === col.key);
+                          const opts = filterOptions[col.key] || (fld && fld.options ? fld.options.map(o => ({ label: o.label, value: o.value })) : []);
+                          if (opts && opts.length) {
+                            return (
+                              <select
+                                className="table-filter"
+                                value={filters[col.key] || 'All'}
+                                onChange={(e) => { setFilters(prev => ({ ...prev, [col.key]: e.target.value })); setPage(1); }}
+                              >
+                                <option value="All">All</option>
+                                {opts.map((o) => (
+                                  <option key={o.value} value={o.value}>{o.label}</option>
+                                ))}
+                              </select>
+                            );
+                          }
+                          // fallback simple select
+                          return (
+                            <select className="table-filter" value={filters[col.key] || 'All'} onChange={(e) => { setFilters(prev => ({ ...prev, [col.key]: e.target.value })); setPage(1); }}>
+                              <option value="All">All</option>
+                            </select>
+                          );
+                        })()}
+                      </th>
+                    ))}
+                    {showStatusBadge ? <th /> : null}
+                    <th />
+                  </tr>
+                )}
               </thead>
               <tbody>
-                {rows.map((row) => (
+                {rows.map((row, idx) => (
                   <tr key={row._id}>
+                    <td>{(page - 1) * pageSize + idx + 1}</td>
                     {config.columns.map((col) => (
-                      <td key={col.key} data-label={col.label}>{renderCell(row, col)}</td>
+                      col.type === 'action' ? (
+                        <td key={col.key} data-label={col.label}>
+                          <button className="btn btn-success" onClick={() => handleQuoteClick(row)}>
+                            Quote
+                          </button>
+                        </td>
+                      ) : (
+                        <td key={col.key} data-label={col.label}>{renderCell(row, col)}</td>
+                      )
                     ))}
-                    <td data-label="Status">
-                      <button className="badge-btn" onClick={() => handleToggleStatus(row)}>
-                        <StatusBadge status={row.status} />
-                      </button>
-                    </td>
+                    {showStatusBadge && (
+                      <td data-label="Status">
+                        <button className="badge-btn" onClick={() => handleToggleStatus(row)}>
+                          <StatusBadge status={row.status} />
+                        </button>
+                      </td>
+                    )}
                     <td className="col-actions" data-label="Actions">
                       <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
                         <button className="icon-btn" onClick={() => setViewingRow(row)} aria-label="View">

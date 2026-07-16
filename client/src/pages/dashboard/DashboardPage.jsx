@@ -7,15 +7,29 @@ import EmptyState from '../../components/common/EmptyState';
 export default function DashboardPage() {
   const navigate = useNavigate();
   const [portalTarget, setPortalTarget] = useState(null);
+  const [showSearch, setShowSearch] = useState(false);
 
   useEffect(() => {
     setPortalTarget(document.getElementById('header-actions-target'));
+    const handleFilterText = (e) => setShowSearch(Boolean(e.detail));
+    window.addEventListener('filter-text', handleFilterText);
+    return () => window.removeEventListener('filter-text', handleFilterText);
   }, []);
 
   return (
     <div className="page">
       {portalTarget && createPortal(
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {showSearch && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '0 8px' }}>
+              <input
+                type="text"
+                placeholder="Search dashboard..."
+                disabled
+                style={{ width: '180px', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+              />
+            </div>
+          )}
           <button 
             className="icon-btn" 
             onClick={() => navigate('/requests')}

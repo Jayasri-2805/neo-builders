@@ -254,16 +254,25 @@ export const PurchaseIndent = createMasterModel(
   'PurchaseIndent',
   {
     indentDate: { type: Date, default: Date.now },
+    indentNo: { type: String, required: true, trim: true },
     siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'SiteType', required: true },
     requiredDate: { type: String, required: true },
     productTypeId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductType', required: true },
     type: { type: String, required: true },
-    purposeOfIndent: { type: String, required: true }
+    priorityId: { type: mongoose.Schema.Types.ObjectId, ref: 'Priority' },
+    purposeOfIndent: { type: String, required: true },
+    material: { type: String, trim: true },
+    indentStatus: { type: String, enum: ['Raised', 'Approved', 'Rejected', 'Pending'], default: 'Pending' },
+    raisedByName: { type: String, trim: true },
+    pmPdApproval: { type: String, enum: ['Pending', 'Approved', 'Rejected'], default: 'Pending' },
+    pmPdApprovalUpdatedAt: { type: Date },
   },
   {
+    uniqueWith: 'indentNo',
     refs: [
       { path: 'siteId', ref: 'SiteType' },
-      { path: 'productTypeId', ref: 'ProductType' }
+      { path: 'productTypeId', ref: 'ProductType' },
+      { path: 'priorityId', ref: 'Priority' },
     ]
   }
 );
@@ -314,14 +323,17 @@ export const MaterialRequest = createMasterModel(
     material: { type: String, required: true },
     photos: [{ type: String }],
     pmPdApproval: { type: String, default: 'Pending' },
+    pmPdApprovalUpdatedAt: { type: Date, default: null },
     productTypeId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductType' },
     purchaseItems: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Item' }],
+    awardedQuotationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Quotation', default: null },
   },
   {
     refs: [
       { path: 'siteTypeId', ref: 'SiteType' },
       { path: 'productTypeId', ref: 'ProductType' },
-      { path: 'purchaseItems', ref: 'Item' }
+      { path: 'purchaseItems', ref: 'Item' },
+      { path: 'awardedQuotationId', ref: 'Quotation' }
     ],
     hooks: {
       preSave: async function (next) {
@@ -388,7 +400,7 @@ export const Quotation = createMasterModel(
     freight: { type: String, required: true },
     loading: { type: String, required: true },
     unloading: { type: String, required: true },
-    fileUrl: { type: String },
+    fileUrl: { type: [String] },
     termsAndConditions: [{ type: String }],
   },
   {

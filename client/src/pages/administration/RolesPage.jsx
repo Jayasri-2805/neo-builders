@@ -46,18 +46,19 @@ function RoleFormModal({ role, modules, actions, onClose, onSaved, toast }) {
   };
 
   return (
-    <div className="modal-overlay">
-      <div className="modal-panel modal-wide">
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-panel modal-wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>{isEdit ? 'Edit Role' : 'Add Role'}</h3>
           <button className="icon-btn" onClick={onClose}><X size={18} /></button>
         </div>
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
-            <div className="form-group">
+            <div className="form-group" style={{ maxWidth: '220px', alignSelf: 'flex-start' }}>
               <label>Role Name<span className="required-mark">*</span></label>
               <input
                 className="form-input"
+                style={{ width: '220px', maxWidth: '220px', alignSelf: 'flex-start' }}
                 required
                 disabled={role?.isSystem}
                 value={name}
@@ -78,9 +79,9 @@ function RoleFormModal({ role, modules, actions, onClose, onSaved, toast }) {
                 <tbody>
                   {modules.map((mod) => (
                     <tr key={mod}>
-                      <td className="permission-module" onClick={() => toggleRow(mod)}>{mod}</td>
+                      <td className="permission-module" onClick={() => toggleRow(mod)} style={{ width: '140px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{mod}</td>
                       {actions.map((a) => (
-                        <td key={a}>
+                        <td key={a} style={{ width: '80px', textAlign: 'center' }}>
                           <input
                             type="checkbox"
                             checked={Boolean(permissions[mod]?.[a])}
@@ -162,14 +163,16 @@ export default function RolesPage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th>S. No</th>
                   <th>Role Name</th>
                   <th>Type</th>
                   <th className="col-actions">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {roles.map((role) => (
+                {roles.map((role, idx) => (
                   <tr key={role._id}>
+                    <td>{idx + 1}</td>
                     <td>{role.name}</td>
                     <td>{role.isSystem ? <span className="badge badge-muted"><Lock size={11} /> System</span> : <span className="badge badge-success">Custom</span>}</td>
                     <td className="col-actions">

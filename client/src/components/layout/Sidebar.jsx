@@ -146,7 +146,7 @@ export default function Sidebar({ open, onClose, collapsed, isMobile }) {
             >
               <div style={{ position: 'relative' }}>
                 {user?.company?.logo?.url ? (
-                  <div className="company-logo-circle" style={{ width: '42px', height: '42px', borderRadius: '50%', border: '2px solid var(--accent)', padding: '1px', background: 'var(--bg-secondary)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <div className="company-logo-circle" style={{ width: '42px', height: '42px', borderRadius: '50%', border: '2px solid #000', padding: '1px', background: 'var(--bg-secondary)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <img
                       src={getLogoUrl(user.company.logo.url)}
                       alt="Company Logo"
@@ -154,7 +154,7 @@ export default function Sidebar({ open, onClose, collapsed, isMobile }) {
                     />
                   </div>
                 ) : (
-                  <div className="user-avatar" style={{ width: '42px', height: '42px', fontSize: '14px', borderRadius: '50%', border: '2px solid var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontWeight: '700' }}>
+                  <div className="user-avatar" style={{ width: '42px', height: '42px', fontSize: '14px', borderRadius: '50%', border: '2px solid #000', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontWeight: '700' }}>
                     {getCompanyInitials(user?.company?.companyName)}
                   </div>
                 )}
@@ -177,7 +177,7 @@ export default function Sidebar({ open, onClose, collapsed, isMobile }) {
             >
               <div style={{ position: 'relative' }}>
                 {user?.company?.logo?.url ? (
-                  <div className="company-logo-circle" style={{ width: '56px', height: '56px', borderRadius: '50%', border: '3px solid var(--accent)', padding: '2px', background: 'var(--bg-secondary)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <div className="company-logo-circle" style={{ width: '56px', height: '56px', borderRadius: '50%', border: '3px solid #000', padding: '2px', background: 'var(--bg-secondary)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <img
                       src={getLogoUrl(user.company.logo.url)}
                       alt="Company Logo"
@@ -185,7 +185,7 @@ export default function Sidebar({ open, onClose, collapsed, isMobile }) {
                     />
                   </div>
                 ) : (
-                  <div className="user-avatar" style={{ width: '56px', height: '56px', fontSize: '20px', borderRadius: '50%', border: '3px solid var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontWeight: '600' }}>
+                  <div className="user-avatar" style={{ width: '56px', height: '56px', fontSize: '20px', borderRadius: '50%', border: '3px solid #000', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontWeight: '600' }}>
                     {getCompanyInitials(user?.company?.companyName)}
                   </div>
                 )}

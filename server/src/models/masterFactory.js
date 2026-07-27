@@ -27,7 +27,9 @@ export function createMasterModel(modelName, fields, options = {}) {
   }
 
   if (options.hooks && typeof options.hooks.preSave === 'function') {
-    schema.pre('save', options.hooks.preSave);
+    // Run preSave hook prior to validation so generated fields (eg. poNumber)
+    // are available for required-field validation.
+    schema.pre('validate', options.hooks.preSave);
   }
 
   schema.set('toJSON', {

@@ -18,10 +18,19 @@ export default function MasterViewModal({ config, data, onClose }) {
             {config.fields.map((field) => {
               const value = getPath(data, field.name);
               let displayValue = value;
+              let displayClass = '';
+
+              if (field.name === 'priorityId') {
+                const priorityName = value?.priorityName || value;
+                displayClass = priorityName ? `priority-badge priority-${String(priorityName).toLowerCase()}` : '';
+              } else if (field.name === 'type' && (value === 'Urgent' || value === 'Normal')) {
+                displayClass = value === 'Urgent' ? 'urgent-text' : 'normal-text';
+              }
 
               if (field.type === 'select' || field.type === 'ref') {
                 if (value && typeof value === 'object' && !Array.isArray(value)) {
                   displayValue =
+                    value.priorityName ||
                     value.departmentName ||
                     value.designationName ||
                     value.categoryName ||
@@ -54,7 +63,7 @@ export default function MasterViewModal({ config, data, onClose }) {
               return (
                 <div key={field.name} className="detail-item">
                   <span className="detail-label">{field.label}</span>
-                  <span className="detail-value">{String(displayValue)}</span>
+                  <span className={`detail-value ${displayClass}`}>{String(displayValue)}</span>
                 </div>
               );
             })}

@@ -402,14 +402,14 @@ export const mastersConfig = {
       { key: 'purposeOfIndent', label: 'Purpose' },
       { key: 'material', label: 'Material Req' },
       { key: 'adminApproval', label: 'Admin Approval' },
-      { key: 'quoteAction', label: 'Quote', type: 'action' },
+      { key: 'quoteAction', label: 'Action', type: 'action' },
       { key: 'indentStatus', label: 'Status' },
       { key: 'raisedByName', label: 'Raised By' },
       { key: 'pmPdApproval', label: 'PM/PD Approval' },
     ],
     fields: [
       { name: 'indentDate', label: 'Indent Date', type: 'date', required: true },
-      { name: 'indentNo', label: 'Indent No', type: 'text', required: true },
+      { name: 'indentNo', label: 'Indent No', type: 'select', refEndpoint: 'material-requests', refLabel: 'indentNo', required: true },
       { name: 'siteId', label: 'Site', type: 'select', refEndpoint: 'site-types', refLabel: 'siteType', required: true },
       { name: 'requiredDate', label: 'Required Date', type: 'date', required: true },
       { name: 'productTypeId', label: 'Product Type', type: 'select', refEndpoint: 'product-types', refLabel: 'productType', required: true },
@@ -488,6 +488,8 @@ export const sidebarGroups = [
     icon: 'ShoppingCart',
     items: [
       { label: 'Purchase Indent', path: '/purchase/purchase-indents', moduleKey: 'purchaseIndents', icon: 'FileText' },
+      { label: 'Purchase Order', path: '/purchase/orders', moduleKey: 'purchaseOrder', icon: 'ClipboardList' },
+      { label: 'Rejected Purchase', path: '/purchase/rejected', moduleKey: 'rejectedPurchase', icon: 'CircleX' },
     ]
   },
   {

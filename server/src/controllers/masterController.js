@@ -39,6 +39,14 @@ export function createMasterController(model, moduleName, searchableFields = [])
 
         if (status) query.status = status;
 
+        // Allow additional query filters for faster client-side lookups
+        const reservedKeys = ['page', 'limit', 'search', 'status', 'sort'];
+        Object.keys(req.query).forEach((key) => {
+          if (!reservedKeys.includes(key) && req.query[key] !== undefined && req.query[key] !== '') {
+            query[key] = req.query[key];
+          }
+        });
+
         if (search && searchableFields.length) {
           query.$or = searchableFields.map((field) => ({
             [field]: { $regex: search, $options: 'i' },

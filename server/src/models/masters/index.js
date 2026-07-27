@@ -256,24 +256,90 @@ export const PurchaseIndent = createMasterModel(
     indentDate: { type: Date, default: Date.now },
     indentNo: { type: String, required: true, trim: true },
     siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'SiteType', required: true },
+    supplierId: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier' },
     requiredDate: { type: String, required: true },
     productTypeId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductType', required: true },
     type: { type: String, required: true },
     priorityId: { type: mongoose.Schema.Types.ObjectId, ref: 'Priority' },
     purposeOfIndent: { type: String, required: true },
     material: { type: String, trim: true },
-    indentStatus: { type: String, enum: ['Raised', 'Approved', 'Rejected', 'Pending'], default: 'Pending' },
+    totalAmount: { type: Number, default: 0 },
+    indentStatus: { type: String, enum: ['Raised', 'Approved', 'Rejected', 'Pending', 'Converted'], default: 'Pending' },
     raisedByName: { type: String, trim: true },
     pmPdApproval: { type: String, enum: ['Pending', 'Approved', 'Rejected'], default: 'Pending' },
     pmPdApprovalUpdatedAt: { type: Date },
+    rejectionReason: { type: String, trim: true },
+    rejectedBy: { type: String, trim: true },
+    rejectedDate: { type: Date },
+    rejectionSnapshot: { type: mongoose.Schema.Types.Mixed },
+    convertedAt: { type: Date },
   },
   {
     uniqueWith: 'indentNo',
     refs: [
       { path: 'siteId', ref: 'SiteType' },
+      { path: 'supplierId', ref: 'Supplier' },
       { path: 'productTypeId', ref: 'ProductType' },
       { path: 'priorityId', ref: 'Priority' },
     ]
+  }
+);
+
+export const PurchaseOrder = createMasterModel(
+  'PurchaseOrder',
+  {
+    purchaseIndentId: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseIndent' },
+    materialRequestId: { type: mongoose.Schema.Types.ObjectId, ref: 'MaterialRequest' },
+    quotationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Quotation' },
+    poNumber: { type: String, required: true, trim: true },
+    indentNo: { type: String, required: true, trim: true },
+    requestNo: { type: String, required: true, trim: true },
+    siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'SiteType', required: true },
+    supplierId: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier' },
+    requestedByName: { type: String, trim: true },
+    requestDate: { type: String, required: true },
+    freight: { type: Number, default: 0 },
+    loading: { type: Number, default: 0 },
+    unloading: { type: Number, default: 0 },
+    subTotal: { type: Number, default: 0 },
+    grandTotal: { type: Number, default: 0 },
+    orderStatus: { type: String, enum: ['Draft', 'Ordered', 'Completed'], default: 'Draft' },
+    indentSnapshot: { type: mongoose.Schema.Types.Mixed },
+    quotationSnapshot: { type: mongoose.Schema.Types.Mixed },
+  },
+  {
+    refs: [
+      { path: 'purchaseIndentId', ref: 'PurchaseIndent' },
+      { path: 'materialRequestId', ref: 'MaterialRequest' },
+      { path: 'quotationId', ref: 'Quotation' },
+      { path: 'siteId', ref: 'SiteType' },
+      { path: 'supplierId', ref: 'Supplier' },
+    ],
+    hooks: {
+      preSave: async function (next) {
+        if (!this.poNumber) {
+          try {
+            const SiteType = mongoose.model('SiteType');
+            const site = await SiteType.findById(this.siteId);
+            let siteCode = 'UNK';
+            if (site && site.siteType) {
+              siteCode = site.siteType.substring(0, 3).toUpperCase();
+            }
+
+            const year = new Date().getFullYear().toString().slice(-2);
+            const count = await mongoose.model('PurchaseOrder').countDocuments({
+              companyId: this.companyId,
+              createdAt: { $gte: new Date(new Date().getFullYear(), 0, 1) }
+            });
+            const seq = (count + 1).toString().padStart(3, '0');
+            this.poNumber = `${siteCode}/PO/${year}/${seq}`;
+          } catch (err) {
+            console.error('Error generating PO number', err);
+          }
+        }
+        next();
+      }
+    }
   }
 );
 
@@ -324,15 +390,26 @@ export const MaterialRequest = createMasterModel(
     photos: [{ type: String }],
     pmPdApproval: { type: String, default: 'Pending' },
     pmPdApprovalUpdatedAt: { type: Date, default: null },
+    mdApproval: { type: String, enum: ['Pending', 'Approved', 'Rejected'], default: 'Pending' },
+    mdApprovalUpdatedAt: { type: Date, default: null },
+    mdApprovalStatus: { type: String, enum: ['Pending', 'Approved', 'Rejected'], default: 'Pending' },
+    comparisonStatus: { type: String, enum: ['Pending', 'Compared', 'Pending MD Approval', 'Approved', 'Rejected', 'PO Generated'], default: 'Pending' },
+    comparisonNo: { type: String, trim: true, default: '' },
+    approvedBy: { type: String, trim: true, default: '' },
+    approvedDate: { type: Date, default: null },
+    approvalRemarks: { type: String, trim: true, default: '' },
+    poGenerated: { type: Boolean, default: false },
+    pdfGenerated: { type: Boolean, default: false },
+    poNumber: { type: String, trim: true, default: '' },
     productTypeId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductType' },
-    purchaseItems: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Item' }],
+    purchaseItems: [{ type: mongoose.Schema.Types.Mixed }],
     awardedQuotationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Quotation', default: null },
+    purchaseOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder', default: null },
   },
   {
     refs: [
       { path: 'siteTypeId', ref: 'SiteType' },
       { path: 'productTypeId', ref: 'ProductType' },
-      { path: 'purchaseItems', ref: 'Item' },
       { path: 'awardedQuotationId', ref: 'Quotation' }
     ],
     hooks: {
@@ -389,6 +466,78 @@ export const MaterialRequest = createMasterModel(
   }
 );
 
+// Propagate PM/PD approval changes to related PurchaseIndents
+try {
+  MaterialRequest.schema.post('save', async function (doc) {
+    try {
+      const PurchaseIndent = mongoose.model('PurchaseIndent');
+      const filter = { $or: [{ indentNo: doc.indentNo }, { indentNo: doc._id }] };
+
+      // Try to resolve supplierId from awarded quotation or any quotation linked to this material request
+      let resolvedSupplierId = null;
+      try {
+        const Quotation = mongoose.model('Quotation');
+        let q = null;
+        if (doc.awardedQuotationId) {
+          q = await Quotation.findById(doc.awardedQuotationId).lean();
+        }
+        if (!q) {
+          q = await Quotation.findOne({ materialRequestId: doc._id }).lean();
+        }
+        if (q && q.supplierId) resolvedSupplierId = q.supplierId;
+      } catch (err) {
+        // ignore resolution errors
+      }
+
+      // Build update payload for existing indents
+      const updatePayload = {
+        pmPdApproval: doc.pmPdApproval,
+        pmPdApprovalUpdatedAt: doc.pmPdApprovalUpdatedAt || new Date(),
+      };
+      if (resolvedSupplierId) updatePayload.supplierId = resolvedSupplierId;
+
+      // Update existing indents with new approval status and supplier if available
+      await PurchaseIndent.updateMany(filter, updatePayload);
+
+      // If the material request was approved, create a PurchaseIndent snapshot if none exists
+      if (doc.pmPdApproval === 'Approved') {
+        try {
+          const exists = await PurchaseIndent.findOne({ indentNo: doc.indentNo }).lean();
+          if (!exists) {
+            const payload = {
+              indentDate: new Date(),
+              indentNo: doc.indentNo || '',
+              siteId: doc.siteTypeId || null,
+              requiredDate: doc.requiredDate || null,
+              productTypeId: doc.productTypeId || null,
+              type: 'Regular',
+              priorityId: null,
+              purposeOfIndent: doc.purpose || '',
+              material: doc.material || '',
+              totalAmount: 0,
+              indentStatus: 'Approved',
+              raisedByName: doc.raisedByName || '',
+              pmPdApproval: doc.pmPdApproval,
+              pmPdApprovalUpdatedAt: doc.pmPdApprovalUpdatedAt || new Date(),
+              companyId: doc.companyId,
+              createdBy: doc.createdBy,
+            };
+            if (resolvedSupplierId) payload.supplierId = resolvedSupplierId;
+            await PurchaseIndent.create(payload);
+          }
+        } catch (err) {
+          // ignore create errors, log for debugging
+          console.error('Failed to auto-create PurchaseIndent for approved MaterialRequest', err);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to propagate pmPdApproval to PurchaseIndent', err);
+    }
+  });
+} catch (e) {
+  // ignore if attaching hook fails in some environments
+}
+
 export const Quotation = createMasterModel(
   'Quotation',
   {
@@ -400,6 +549,14 @@ export const Quotation = createMasterModel(
     freight: { type: String, required: true },
     loading: { type: String, required: true },
     unloading: { type: String, required: true },
+    quotationItems: [{
+      itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Item', required: true },
+      rate: { type: Number, default: 0 },
+      taxPercent: { type: Number, default: 0 },
+      taxAmount: { type: Number, default: 0 },
+      total: { type: Number, default: 0 },
+      isSelected: { type: Boolean, default: false }
+    }],
     fileUrl: { type: [String] },
     termsAndConditions: [{ type: String }],
   },
@@ -430,6 +587,7 @@ export const MASTER_REGISTRY = {
   works: { model: Work, label: 'Work' },
   'filling-stations': { model: FillingStation, label: 'Filling Station' },
   'material-requests': { model: MaterialRequest, label: 'Material Request' },
+  'purchase-orders': { model: PurchaseOrder, label: 'Purchase Order' },
   purchases: { model: Purchase, label: 'Purchase' },
   taxes: { model: Tax, label: 'Tax' },
   charges: { model: Charge, label: 'Charge' },

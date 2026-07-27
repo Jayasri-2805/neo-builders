@@ -1,8 +1,40 @@
-import { useEffect, useMemo, useState, useRef, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Fragment, useEffect, useMemo, useState, useRef, useCallback } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { Eye, CheckCircle, ArrowLeft, Plus, FileText, FileUp, X, Edit, Trash2 } from 'lucide-react';
-import { materialRequestApi, productTypeApi, itemCategoryApi, itemUomApi, taxApi, itemApi, supplierApi, quotationApi, uploadAttachment } from '../../api/masterApi';
+import { materialRequestApi, productTypeApi, itemCategoryApi, itemUomApi, taxApi, itemApi, supplierApi, quotationApi, comparisonApi, uploadAttachment } from '../../api/masterApi';
+
+const normalizeTaxValue = (value) => {
+  if (value === null || value === undefined || value === '') return 0;
+
+  const cleanedValue = String(value).trim().replace(/%/g, '').replace(/,/g, '');
+  const parsedValue = Number(cleanedValue);
+
+  return Number.isFinite(parsedValue) ? parsedValue : 0;
+};
+
+const isSameId = (a, b) => {
+  if (!a || !b) return false;
+  const normalize = (value) => {
+    if (typeof value === 'object') {
+      return String(value._id || value.id || value).trim();
+    }
+    return String(value).trim();
+  };
+  return normalize(a) === normalize(b);
+};
+
+const getItemUomName = (item, uomList = []) => {
+  if (!item) return '—';
+  if (typeof item.itemUomId === 'object' && item.itemUomId !== null) {
+    return item.itemUomId.uomName || item.itemUomId.code || item.itemUomId.name || '—';
+  }
+  if (typeof item.itemUomId === 'string' && item.itemUomId) {
+    const matchedUom = uomList.find((uom) => String(uom._id) === String(item.itemUomId));
+    return matchedUom?.uomName || matchedUom?.code || item.itemUomId;
+  }
+  return '—';
+};
 
 export default function RequestsPage() {
   const [requests, setRequests] = useState([]);
@@ -22,12 +54,18 @@ export default function RequestsPage() {
     itemName: '',
     uomId: '',
     taxValue: '',
+    specification: '',
+    quantity: '',
+    boqRate: '',
+    approvedQty: '',
+    remarks: '',
     selectedItemId: ''
   });
   
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [activeRequest, setActiveRequest] = useState(null);
   const [isAddTenderedItemPopupOpen, setIsAddTenderedItemPopupOpen] = useState(false);
+  const [editingTenderedItemIndex, setEditingTenderedItemIndex] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [isQuotationPanelOpen, setIsQuotationPanelOpen] = useState(false);
@@ -40,6 +78,8 @@ export default function RequestsPage() {
   const [quotationToDelete, setQuotationToDelete] = useState(null);
   const [isSubmittingQuotation, setIsSubmittingQuotation] = useState(false);
   const fileInputRef = useRef(null);
+  const comparisonLoadedRequestId = useRef(null);
+  const comparisonRef = useRef(null);
   const [toastMessage, setToastMessage] = useState('');
   const [toastType, setToastType] = useState('success');
   const [filterText, setFilterText] = useState('');
@@ -54,9 +94,14 @@ export default function RequestsPage() {
     unloading: '',
     file: [],
     existingFileUrls: [],
-    acceptedTerms: []
+    acceptedTerms: [],
+    termsAndConditions: '',
+    quotationItems: []
   });
   const [showComparison, setShowComparison] = useState(false);
+  const [isSavingComparison, setIsSavingComparison] = useState(false);
+  const [isSendingForMdApproval, setIsSendingForMdApproval] = useState(false);
+  const navigate = useNavigate();
 
   const TERMS = [
     "The Total Amount is inclusive of GST & Transport.",
@@ -123,7 +168,7 @@ export default function RequestsPage() {
     setEditingQuotationId(null);
     setQFormData({
       supplierId: '', quoteRefNo: '', expectedDateOfDelivery: '', paymentTerms: '',
-      freight: '', loading: '', unloading: '', file: [], existingFileUrls: [], acceptedTerms: []
+      freight: '', loading: '', unloading: '', file: [], existingFileUrls: [], acceptedTerms: [], termsAndConditions: '', quotationItems: []
     });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -136,7 +181,17 @@ export default function RequestsPage() {
     const req = requests.find(r => r._id === requestId);
     if (!req) return;
 
-    setActiveRequest(req);
+    const mergedRequest = { ...req };
+    if (activeRequest && activeRequest._id === req._id && Array.isArray(activeRequest.purchaseItems) && activeRequest.purchaseItems.length > 0) {
+      const incomingItems = Array.isArray(req.purchaseItems) ? req.purchaseItems : [];
+      const activeHasMetadata = activeRequest.purchaseItems.some((item) => item && typeof item === 'object' && (item.quantity !== undefined || item.boqRate !== undefined));
+      const incomingHasMetadata = incomingItems.some((item) => item && typeof item === 'object' && (item.quantity !== undefined || item.boqRate !== undefined));
+      if (activeHasMetadata && !incomingHasMetadata) {
+        mergedRequest.purchaseItems = activeRequest.purchaseItems;
+      }
+    }
+
+    setActiveRequest(mergedRequest);
     setIsPanelOpen(!isQuot);
     setIsQuotationPanelOpen(isQuot);
   }, [searchParams, requests]);
@@ -181,63 +236,232 @@ export default function RequestsPage() {
     return () => clearInterval(interval);
   }, [fetchRequests]);
 
+  const normalizePurchaseItem = (item) => {
+    if (typeof item === 'object') return item;
+    const refItem = items.find((it) => String(it._id) === String(item));
+    return refItem ? { ...refItem, itemCategoryId: refItem.itemCategoryId, itemUomId: refItem.itemUomId } : { _id: item };
+  };
+
+  const buildQuotationItemsFromRequest = () => {
+    if (!activeRequest || !Array.isArray(activeRequest.purchaseItems)) return [];
+    return activeRequest.purchaseItems.map((item) => {
+      const normalized = normalizePurchaseItem(item);
+      return {
+        itemId: getRequestItemId(normalized) || item,
+        rate: '',
+        taxPercent: normalized.tax !== undefined ? String(normalizeTaxValue(normalized.tax)) : '18',
+        taxAmount: '',
+        total: '',
+        isSelected: false
+      };
+    });
+  };
+
   const handleAddTenderedItem = async () => {
-    if (!formData.categoryId || !formData.itemCode || !formData.itemName || !formData.uomId) {
-      alert('Please fill in all required fields (Category, Code, Name, Unit).');
+    if (!formData.selectedItemId || !formData.quantity || !formData.boqRate) {
+      alert('Please select an item from the master list and enter Quantity and BOQ Rate.');
       return;
     }
-    
+
     try {
-      let createdItem = null;
-      // If user selected an existing item, reuse it
-      if (formData.selectedItemId) {
-        createdItem = items.find(it => it._id === formData.selectedItemId) || { _id: formData.selectedItemId, code: formData.itemCode, itemName: formData.itemName };
-      } else {
-        // 1. Create the Item in Master
-        const newItemPayload = {
-          code: formData.itemCode,
-          itemName: formData.itemName,
-          itemCategoryId: formData.categoryId,
-          itemUomId: formData.uomId,
-          tax: formData.taxValue ? Number(formData.taxValue) : 0
-        };
-        const itemRes = await itemApi.create(newItemPayload);
-        if (itemRes.data.success && itemRes.data.data) {
-          createdItem = itemRes.data.data;
-        }
+      const createdItem = items.find((it) => String(it._id) === String(formData.selectedItemId));
+      if (!createdItem) {
+        showToast('Selected item was not found in the master list.', 'error');
+        return;
       }
 
-      if (createdItem) {
-        // 2. Add to Material Request
-        if (activeRequest) {
-          await materialRequestApi.update(activeRequest._id, {
-            purchaseItems: [...(activeRequest.purchaseItems || []).map(i => typeof i === 'object' ? i._id : i), createdItem._id]
-          });
-          // Optimistically update UI
-          const updatedRequest = { 
-            ...activeRequest, 
-            purchaseItems: [...(activeRequest.purchaseItems || []), createdItem]
-          };
-          setActiveRequest(updatedRequest);
-          // Update in requests list
-          const updatedRequests = requests.map(r => r._id === activeRequest._id ? updatedRequest : r);
-          setRequests(updatedRequests);
+      if (createdItem && activeRequest) {
+        const tenderItem = {
+          ...createdItem,
+          itemCategoryId: formData.categoryId,
+          itemUomId: formData.uomId,
+          itemCode: formData.itemCode,
+          itemName: formData.itemName,
+          specification: formData.specification,
+          quantity: Number(formData.quantity),
+          boqRate: formData.boqRate,
+          approvedQty: formData.approvedQty || formData.quantity,
+          remarks: formData.remarks || ''
+        };
+
+        const existingItems = Array.isArray(activeRequest.purchaseItems)
+          ? activeRequest.purchaseItems.map(normalizePurchaseItem)
+          : [];
+
+        let updatedItems = [...existingItems];
+        if (editingTenderedItemIndex !== null && editingTenderedItemIndex >= 0 && editingTenderedItemIndex < updatedItems.length) {
+          updatedItems[editingTenderedItemIndex] = tenderItem;
+        } else {
+          updatedItems.push(tenderItem);
         }
-        // Reset form & close
-        setFormData({ categoryId: '', itemCode: '', itemName: '', uomId: '', taxValue: '', selectedItemId: '' });
-        setIsAddTenderedItemPopupOpen(false);
-        showToast('Item added successfully!', 'success');
+
+        await materialRequestApi.update(activeRequest._id, {
+          purchaseItems: updatedItems
+        });
+
+        const updatedRequest = {
+          ...activeRequest,
+          purchaseItems: updatedItems
+        };
+        setActiveRequest(updatedRequest);
+        setRequests((prevRequests) => prevRequests.map((req) => (req._id === activeRequest._id ? updatedRequest : req)));
       }
+
+      setEditingTenderedItemIndex(null);
+      setFormData({
+        categoryId: '',
+        itemCode: '',
+        itemName: '',
+        uomId: '',
+        taxValue: '',
+        specification: '',
+        quantity: '',
+        boqRate: '',
+        approvedQty: '',
+        remarks: '',
+        selectedItemId: ''
+      });
+      showToast('Tender item added successfully!', 'success');
     } catch (error) {
       console.error('Failed to add tendered item:', error);
       showToast('Failed to add item. Ensure code is unique.', 'error');
     }
   };
 
+  const handleRemoveTenderedItem = async (itemIdOrIndex) => {
+    if (!activeRequest) return;
+    const existingItems = Array.isArray(activeRequest.purchaseItems)
+      ? activeRequest.purchaseItems.map(normalizePurchaseItem)
+      : [];
+
+    const updatedItems = existingItems.filter((item, index) => {
+      if (typeof itemIdOrIndex === 'number') {
+        return index !== itemIdOrIndex;
+      }
+      return String(item._id || item).trim() !== String(itemIdOrIndex).trim();
+    });
+
+    try {
+      await materialRequestApi.update(activeRequest._id, {
+        purchaseItems: updatedItems
+      });
+    } catch (updateError) {
+      console.error('Failed to remove tendered item from request:', updateError);
+    }
+
+    const updatedRequest = { ...activeRequest, purchaseItems: updatedItems };
+    setActiveRequest(updatedRequest);
+    setRequests((prevRequests) => prevRequests.map((req) => (req._id === activeRequest._id ? updatedRequest : req)));
+  };
+
+  const handlePurchaseItemFieldChange = (index, field, value) => {
+    if (!activeRequest) return;
+    const existingItems = Array.isArray(activeRequest.purchaseItems)
+      ? activeRequest.purchaseItems.map(normalizePurchaseItem)
+      : [];
+
+    const updatedItems = existingItems.map((item, idx) => {
+      if (idx !== index) return item;
+      const updated = { ...item };
+      if (field === 'approvedQty') {
+        updated.approvedQty = value === '' ? undefined : Number(value);
+      } else if (field === 'remarks') {
+        updated.remarks = value;
+      }
+      return updated;
+    });
+
+    const updatedRequest = { ...activeRequest, purchaseItems: updatedItems };
+    setActiveRequest(updatedRequest);
+    setRequests((prevRequests) => prevRequests.map((req) => (req._id === activeRequest._id ? updatedRequest : req)));
+  };
+
+  const handlePurchaseItemFieldBlur = async () => {
+    if (!activeRequest) return;
+    const updatedItems = Array.isArray(activeRequest.purchaseItems)
+      ? activeRequest.purchaseItems.map(normalizePurchaseItem)
+      : [];
+
+    try {
+      await materialRequestApi.update(activeRequest._id, { purchaseItems: updatedItems });
+    } catch (error) {
+      console.error('Failed to save purchase item changes:', error);
+      showToast('Failed to save item changes. Please try again.', 'error');
+    }
+  };
+
+  const handleEditTenderedItem = (item, index) => {
+    if (!item) return;
+
+    setFormData({
+      selectedItemId: item._id || item.selectedItemId || '',
+      categoryId: typeof item.itemCategoryId === 'object' ? (item.itemCategoryId?._id || item.itemCategoryId) : item.itemCategoryId || '',
+      itemCode: item.code || item.itemCode || '',
+      itemName: item.itemName || '',
+      uomId: typeof item.itemUomId === 'object' ? (item.itemUomId?._id || item.itemUomId) : item.itemUomId || '',
+      taxValue: item.tax !== undefined ? String(item.tax) : '',
+      specification: item.specification || '',
+      quantity: item.quantity !== undefined ? String(item.quantity) : '',
+      boqRate: item.boqRate || '',
+      approvedQty: item.approvedQty !== undefined ? String(item.approvedQty) : '',
+      remarks: item.remarks || ''
+    });
+    setEditingTenderedItemIndex(index);
+    setIsAddTenderedItemPopupOpen(true);
+  };
+
   const showToast = (msg, type = 'success') => {
     setToastMessage(msg);
     setToastType(type);
     setTimeout(() => setToastMessage(''), 3000);
+  };
+
+  const buildQuotationPayload = (formData, fileUrls = []) => {
+    const normalizedTerms = [
+      ...(Array.isArray(formData.acceptedTerms) ? formData.acceptedTerms : []),
+      ...(typeof formData.termsAndConditions === 'string' ? formData.termsAndConditions.split(/\r?\n/) : []),
+    ]
+      .map((term) => String(term).trim())
+      .filter(Boolean)
+      .filter((term, index, arr) => arr.indexOf(term) === index);
+
+    const normalizedQuotationItems = Array.isArray(formData.quotationItems)
+      ? formData.quotationItems.map((item, index) => {
+          const rate = parseNumericField(item.rate);
+          const taxPercent = parseNumericField(item.taxPercent);
+          const requestItem = getRequestItemById(item.itemId) || activeRequest?.purchaseItems?.[index];
+          const quantity = getRequestItemQuantity(requestItem);
+          const boqRate = getBoqRate(requestItem);
+          if (boqRate !== null && rate > boqRate) {
+            throw new Error(`Supplier rate for ${requestItem?.itemName || 'an item'} cannot exceed the BOQ rate of ${boqRate}.`);
+          }
+          const amount = rate * quantity;
+          const taxAmount = amount * taxPercent / 100;
+          const total = amount + taxAmount;
+          return {
+            itemId: item.itemId,
+            rate,
+            taxPercent,
+            taxAmount,
+            total,
+            isSelected: item.isSelected === true,
+          };
+        })
+      : [];
+
+    return {
+      materialRequestId: activeRequest?._id,
+      supplierId: formData.supplierId,
+      quoteRefNo: formData.quoteRefNo,
+      expectedDateOfDelivery: formData.expectedDateOfDelivery,
+      paymentTerms: formData.paymentTerms,
+      freight: formData.freight,
+      loading: formData.loading,
+      unloading: formData.unloading,
+      fileUrl: fileUrls,
+      termsAndConditions: normalizedTerms,
+      quotationItems: normalizedQuotationItems,
+    };
   };
 
   const handleQuotationSubmit = async () => {
@@ -256,41 +480,40 @@ export default function RequestsPage() {
         qFormData.file.forEach(f => formPayload.append('files', f));
         const uploadRes = await uploadAttachment(formPayload);
         if (uploadRes.data.status === 'success' && uploadRes.data.data.fileUrls && uploadRes.data.data.fileUrls.length > 0) {
-          finalFileUrls = [...finalFileUrls, ...uploadRes.data.data.fileUrls];
+          finalFileUrls = [...uploadRes.data.data.fileUrls, ...finalFileUrls];
         }
       }
 
-      const payload = {
-        materialRequestId: activeRequest._id,
-        supplierId: qFormData.supplierId,
-        quoteRefNo: qFormData.quoteRefNo,
-        expectedDateOfDelivery: qFormData.expectedDateOfDelivery,
-        paymentTerms: qFormData.paymentTerms,
-        freight: qFormData.freight,
-        loading: qFormData.loading,
-        unloading: qFormData.unloading,
-        fileUrl: finalFileUrls,
-        termsAndConditions: qFormData.acceptedTerms
-      };
+      const payload = buildQuotationPayload(qFormData, finalFileUrls);
 
       console.debug('Quotation payload', payload);
+      const normalizeQuotationData = (quote) => ({
+        ...quote,
+        quotationItems: normalizeQuotationItems(quote.quotationItems)
+      });
+
       if (editingQuotationId) {
         await quotationApi.update(editingQuotationId, payload);
         showToast('Quotation updated successfully!', 'success');
+        setQuotationList((prev) => prev.map((q) => (String(q._id) === String(editingQuotationId) ? normalizeQuotationData({ ...q, ...payload }) : q)));
         setEditingQuotationId(null);
       } else {
-        await quotationApi.create(payload);
+        const res = await quotationApi.create(payload);
         showToast('Quotation submitted successfully!', 'success');
+        if (res.data.success && res.data.data) {
+          setQuotationList((prev) => [...prev, normalizeQuotationData(res.data.data)]);
+        } else {
+          fetchQuotations();
+        }
       }
       
       setQFormData({
         supplierId: '', quoteRefNo: '', expectedDateOfDelivery: '', paymentTerms: '',
-        freight: '', loading: '', unloading: '', file: [], existingFileUrls: [], acceptedTerms: []
+        freight: '', loading: '', unloading: '', file: [], existingFileUrls: [], acceptedTerms: [], termsAndConditions: '', quotationItems: buildQuotationItemsFromRequest()
       });
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
-      fetchQuotations();
     } catch (error) {
       console.error('Failed to submit quotation:', error);
       const resp = error?.response?.data;
@@ -317,7 +540,24 @@ export default function RequestsPage() {
       unloading: q.unloading || '',
       file: [], // Keep file empty unless they want to upload new ones
       existingFileUrls: Array.isArray(q.fileUrl) ? q.fileUrl : (q.fileUrl ? [q.fileUrl] : []),
-      acceptedTerms: q.termsAndConditions || []
+      acceptedTerms: Array.isArray(q.termsAndConditions) ? q.termsAndConditions : [],
+      termsAndConditions: Array.isArray(q.termsAndConditions) ? q.termsAndConditions.join('\n') : (q.termsAndConditions || ''),
+      quotationItems: Array.isArray(q.quotationItems)
+        ? q.quotationItems.map((item) => ({
+            itemId: item.itemId,
+            rate: item.rate != null ? String(item.rate) : '',
+            taxPercent: item.taxPercent != null ? String(item.taxPercent) : '',
+            taxAmount: item.taxAmount != null ? String(item.taxAmount) : '',
+            total: item.total != null ? String(item.total) : '',
+            isSelected: item.isSelected === true
+          }))
+        : (activeRequest?.purchaseItems || []).map((item) => ({
+            itemId: item.itemId?._id || item._id || item,
+            rate: '',
+            taxPercent: item.tax !== undefined ? String(item.tax) : '18',
+            taxAmount: '',
+            total: ''
+          }))
     });
   };
 
@@ -334,7 +574,7 @@ export default function RequestsPage() {
         pmPdApprovalUpdatedAt: activeRequest.pmPdApprovalUpdatedAt
       };
       setActiveRequest(updatedRequest);
-      setRequests(requests.map((req) => req._id === activeRequest._id ? updatedRequest : req));
+      setRequests((prevRequests) => prevRequests.map((req) => isSameId(req._id, activeRequest._id) ? updatedRequest : req));
       showToast('Quotation awarded successfully.', 'success');
     } catch (error) {
       console.error('Failed to award quotation:', error);
@@ -353,17 +593,528 @@ export default function RequestsPage() {
     return Number.isFinite(parsedValue) ? parsedValue : 0;
   };
 
-  const getQuotationTotal = (q) => {
-    const freight = parseNumericField(q?.freight);
-    const loading = parseNumericField(q?.loading);
-    const unloading = parseNumericField(q?.unloading);
-    // Debug logging to help trace miscalculations
-    try {
-      console.debug('[getQuotationTotal] id:', q?._id, 'raw:', { freight: q?.freight, loading: q?.loading, unloading: q?.unloading }, 'parsed:', { freight, loading, unloading });
-    } catch (err) {
-      // ignore
+  const handleQuotationItemChange = (index, field, value) => {
+    setQFormData((prev) => {
+      const items = Array.isArray(prev.quotationItems) ? [...prev.quotationItems] : [];
+      items[index] = {
+        ...items[index],
+        [field]: value
+      };
+      return { ...prev, quotationItems: items };
+    });
+  };
+
+  const getRequestItemQuantity = (item) => {
+    const normalized = normalizePurchaseItem(item);
+    const qty = normalized.approvedQty !== undefined && normalized.approvedQty !== null
+      ? normalized.approvedQty
+      : normalized.quantity;
+    return parseNumericField(qty);
+  };
+
+  const computeQuotationItemTotals = (quotationItem, requestItem) => {
+    const rate = parseNumericField(quotationItem?.rate);
+    const taxPercent = parseNumericField(quotationItem?.taxPercent);
+    const quantity = getRequestItemQuantity(requestItem);
+    const amount = rate * quantity;
+    const taxAmount = amount * taxPercent / 100;
+    const total = amount + taxAmount;
+    return { rate, taxPercent, amount, taxAmount, total };
+  };
+
+  const getQuotationSummary = (quote) => {
+    const requestItems = Array.isArray(activeRequest?.purchaseItems) ? activeRequest.purchaseItems : [];
+    const summary = requestItems.reduce((acc, item) => {
+      const normalizedItem = normalizePurchaseItem(item);
+      const quoteItem = findQuotationItem(quote, normalizedItem);
+      if (!quoteItem) return acc;
+      const { amount, taxAmount } = computeQuotationItemTotals(quoteItem, normalizedItem);
+      return {
+        subTotal: acc.subTotal + amount,
+        totalTax: acc.totalTax + taxAmount,
+      };
+    }, { subTotal: 0, totalTax: 0 });
+
+    const freight = parseNumericField(quote?.freight);
+    const loading = parseNumericField(quote?.loading);
+    const unloading = parseNumericField(quote?.unloading);
+    const grandTotal = summary.subTotal + summary.totalTax + freight + loading + unloading;
+
+    return {
+      ...summary,
+      freight,
+      loading,
+      unloading,
+      grandTotal,
+    };
+  };
+
+  const normalizeItemId = (value) => {
+    if (typeof value === 'object' && value !== null) {
+      return String(value._id || value.id || value).trim();
     }
-    return freight + loading + unloading;
+    return String(value || '').trim();
+  };
+
+  const normalizeQuotationItem = (item) => {
+    if (!item) return item;
+    const normalizedTaxPercent = item.taxPercent !== undefined && item.taxPercent !== null ? item.taxPercent : 0;
+    return {
+      ...item,
+      itemId: normalizeItemId(item.itemId),
+      rate: item.rate !== undefined && item.rate !== null ? item.rate : '',
+      taxPercent: normalizedTaxPercent,
+      taxAmount: item.taxAmount !== undefined && item.taxAmount !== null ? item.taxAmount : 0,
+      total: item.total !== undefined && item.total !== null ? item.total : 0,
+      isSelected: item.isSelected === true,
+    };
+  };
+
+  const normalizeQuotationItems = (items = []) => {
+    return Array.isArray(items) ? items.map(normalizeQuotationItem) : [];
+  };
+
+  const getRequestItemById = (itemId) => {
+    if (!activeRequest || !Array.isArray(activeRequest.purchaseItems)) return null;
+    return activeRequest.purchaseItems
+      .map(normalizePurchaseItem)
+      .find((item) => isSameId(getRequestItemId(item), itemId)) || null;
+  };
+
+  const getBoqRate = (requestItem) => {
+    if (!requestItem || requestItem.boqRate === undefined || requestItem.boqRate === null || requestItem.boqRate === '') return null;
+    const boqRate = parseNumericField(requestItem.boqRate);
+    return Number.isFinite(boqRate) ? boqRate : null;
+  };
+
+  const validateQuotationRates = () => {
+    for (const quote of quotationList) {
+      for (const quotationItem of quote.quotationItems || []) {
+        const requestItem = getRequestItemById(quotationItem.itemId);
+        const boqRate = getBoqRate(requestItem);
+        const supplierRate = parseNumericField(quotationItem.rate);
+        if (boqRate !== null && supplierRate > boqRate) {
+          showToast(`Supplier rate for ${requestItem?.itemName || 'an item'} cannot exceed the BOQ rate of ${boqRate}.`, 'error');
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  const validateAwardSelections = () => {
+    if (!Array.isArray(activeRequest?.purchaseItems) || activeRequest.purchaseItems.length === 0) {
+      showToast('No purchase items are available for award.', 'error');
+      return false;
+    }
+
+    const missingSelections = [];
+    const missingRates = [];
+    const overBudget = [];
+
+    activeRequest.purchaseItems.forEach((item, index) => {
+      const displayItem = normalizePurchaseItem(item);
+      const itemId = getRequestItemId(displayItem);
+      const boqRate = getBoqRate(displayItem);
+      const selectedQuoteItem = quotationList.find((quote) => (quote.quotationItems || []).some((quotationItem) => isSameId(quotationItem.itemId, itemId) && quotationItem.isSelected));
+      if (!selectedQuoteItem) {
+        missingSelections.push(displayItem.itemName || `Item ${index + 1}`);
+        return;
+      }
+      const quoteItem = selectedQuoteItem.quotationItems?.find((quotationItem) => isSameId(quotationItem.itemId, itemId));
+      const supplierRate = parseNumericField(quoteItem?.rate);
+      if (supplierRate <= 0) {
+        missingRates.push(displayItem.itemName || `Item ${index + 1}`);
+        return;
+      }
+      if (boqRate !== null && supplierRate > boqRate) {
+        overBudget.push(displayItem.itemName || `Item ${index + 1}`);
+      }
+    });
+
+    if (missingSelections.length > 0) {
+      showToast(`Please select a supplier for: ${missingSelections.join(', ')}`, 'error');
+      return false;
+    }
+    if (missingRates.length > 0) {
+      showToast(`Please enter a rate for: ${missingRates.join(', ')}`, 'error');
+      return false;
+    }
+    if (overBudget.length > 0) {
+      showToast(`Supplier rate exceeds BOQ rate for: ${overBudget.join(', ')}`, 'error');
+      return false;
+    }
+
+    return true;
+  };
+
+  const computeComparisonTotals = (rate, taxPercent, requestItem) => {
+    const quantity = getRequestItemQuantity(requestItem);
+    const parsedRate = rate === '' ? 0 : parseNumericField(rate);
+    const parsedTaxPercent = taxPercent === '' ? 0 : parseNumericField(taxPercent);
+    const amount = parsedRate * quantity;
+    const taxAmount = amount * parsedTaxPercent / 100;
+    const total = amount + taxAmount;
+    return { taxAmount, total };
+  };
+
+  const updateQuotationItemInState = (quoteId, itemId, changes) => {
+    const normalizedItemId = normalizeItemId(itemId);
+    const requestItem = getRequestItemById(normalizedItemId);
+
+    setQuotationList((prev) => prev.map((quote) => {
+      if (!isSameId(quote._id, quoteId)) return quote;
+      const items = Array.isArray(quote.quotationItems) ? [...quote.quotationItems] : [];
+      const existingIndex = items.findIndex((qi) => isSameId(qi.itemId, normalizedItemId));
+      const existingItem = items[existingIndex] || {
+        itemId: normalizedItemId,
+        rate: '',
+        taxPercent: 0,
+        taxAmount: 0,
+        total: 0,
+        isSelected: false,
+      };
+      const updatedItem = {
+        ...existingItem,
+        ...changes,
+      };
+
+      if (changes.rate !== undefined || changes.taxPercent !== undefined) {
+        const totals = computeComparisonTotals(updatedItem.rate, updatedItem.taxPercent, requestItem);
+        updatedItem.taxAmount = totals.taxAmount;
+        updatedItem.total = totals.total;
+      }
+
+      if (existingIndex >= 0) {
+        items[existingIndex] = updatedItem;
+      } else {
+        items.push(updatedItem);
+      }
+      return { ...quote, quotationItems: items };
+    }));
+  };
+
+  const handleComparisonFieldChange = (quoteId, itemId, field, value) => {
+    if (field === 'rate' || field === 'taxPercent') {
+      const normalizedValue = value === '' ? '' : value;
+      if (field === 'rate' && normalizedValue !== '') {
+        const requestItem = getRequestItemById(itemId);
+        const boqRate = getBoqRate(requestItem);
+        if (boqRate !== null && parseNumericField(normalizedValue) > boqRate) {
+          showToast(`Supplier rate cannot exceed the BOQ rate of ${boqRate}.`, 'error');
+          return;
+        }
+      }
+      updateQuotationItemInState(quoteId, itemId, { [field]: normalizedValue });
+      return;
+    }
+    updateQuotationItemInState(quoteId, itemId, { [field]: value });
+  };
+
+  const handleComparisonToggleGST = (quoteId, itemId, enabled) => {
+    const quote = quotationList.find((q) => isSameId(q._id, quoteId));
+    if (!quote) return;
+    const quoteItem = quote.quotationItems?.find((qi) => isSameId(qi.itemId, itemId));
+    const nextTaxPercent = enabled ? (parseNumericField(quoteItem?.taxPercent) > 0 ? parseNumericField(quoteItem.taxPercent) : 18) : 0;
+    updateQuotationItemInState(quoteId, itemId, { taxPercent: nextTaxPercent });
+  };
+
+  const handleMaterialSelectionChange = (quoteId, itemId, isSelected) => {
+    const normalizedItemId = normalizeItemId(itemId);
+    setQuotationList((prev) => prev.map((quote) => {
+      const items = Array.isArray(quote.quotationItems) ? [...quote.quotationItems] : [];
+      return {
+        ...quote,
+        quotationItems: items.map((quotationItem) => {
+          if (!isSameId(quotationItem.itemId, normalizedItemId)) return quotationItem;
+          return {
+            ...quotationItem,
+            isSelected: isSameId(quote._id, quoteId) && isSelected,
+          };
+        }),
+      };
+    }));
+
+    setQuotationList((prev) => prev.map((quote) => {
+      const items = Array.isArray(quote.quotationItems) ? [...quote.quotationItems] : [];
+      return {
+        ...quote,
+        quotationItems: items.map((quotationItem) => {
+          if (!isSameId(quotationItem.itemId, normalizedItemId)) return quotationItem;
+          if (isSameId(quote._id, quoteId)) return quotationItem;
+          return {
+            ...quotationItem,
+            isSelected: false,
+          };
+        }),
+      };
+    }));
+  };
+
+  const prepareQuotationPayload = (quote) => {
+    const quotationItems = Array.isArray(quote.quotationItems) ? quote.quotationItems.map((item) => {
+      const parsedRate = parseNumericField(item.rate);
+      const parsedTaxPercent = parseNumericField(item.taxPercent);
+      const requestItem = normalizePurchaseItem(activeRequest?.purchaseItems?.find((reqItem) => isSameId(normalizePurchaseItem(reqItem)._id, item.itemId)));
+      const quantity = getRequestItemQuantity(requestItem);
+      const amount = parsedRate * quantity;
+      const taxAmount = amount * parsedTaxPercent / 100;
+      const total = amount + taxAmount;
+      return {
+        itemId: item.itemId,
+        rate: parsedRate,
+        taxPercent: parsedTaxPercent,
+        taxAmount,
+        total,
+        isSelected: item.isSelected === true,
+      };
+    }) : [];
+
+    const normalizedTerms = [
+      ...(Array.isArray(quote.acceptedTerms) ? quote.acceptedTerms : []),
+      ...(Array.isArray(quote.termsAndConditions) ? quote.termsAndConditions : []),
+      ...(typeof quote.termsAndConditions === 'string' ? quote.termsAndConditions.split(/\r?\n/) : []),
+    ]
+      .map((term) => String(term).trim())
+      .filter(Boolean)
+      .filter((term, index, arr) => arr.indexOf(term) === index);
+
+    return {
+      supplierId: quote.supplierId?._id || quote.supplierId,
+      quoteRefNo: quote.quoteRefNo || '',
+      expectedDateOfDelivery: quote.expectedDateOfDelivery || '',
+      paymentTerms: quote.paymentTerms || '',
+      freight: quote.freight || '',
+      loading: quote.loading || '',
+      unloading: quote.unloading || '',
+      fileUrl: Array.isArray(quote.fileUrl) ? quote.fileUrl : (quote.fileUrl ? [quote.fileUrl] : []),
+      termsAndConditions: normalizedTerms,
+      quotationItems,
+    };
+  };
+
+  const saveComparisonChart = async ({ generatePo = false } = {}) => {
+    if (!quotationList || quotationList.length === 0) return false;
+    if (!validateQuotationRates()) return false;
+    if (generatePo && !validateAwardSelections()) return false;
+    setIsSavingComparison(true);
+    try {
+      const savedQuotationResponses = await Promise.all(quotationList.map((quote) => {
+        const payload = prepareQuotationPayload(quote);
+        return quotationApi.update(quote._id, payload);
+      }));
+
+      if (activeRequest) {
+        const savedQuotations = savedQuotationResponses
+          .map((response) => response?.data?.data)
+          .filter(Boolean);
+        const quotationsForAward = savedQuotations.length === quotationList.length
+          ? savedQuotations
+          : quotationList;
+        const selectedQuotation = quotationsForAward.find((quote) => (quote.quotationItems || []).some((item) => item.isSelected));
+        const selectedQuotationId = activeRequest.awardedQuotationId || selectedQuotation?._id || null;
+        const comparisonPayload = {
+          comparisonStatus: activeRequest.comparisonStatus === 'Pending' ? 'Compared' : activeRequest.comparisonStatus || 'Compared',
+          comparisonNo: activeRequest.comparisonNo || `CMP-${activeRequest.indentNo || activeRequest._id}`,
+          ...(selectedQuotationId ? { awardedQuotationId: selectedQuotationId } : {}),
+        };
+        const updatedRequestResponse = await materialRequestApi.update(activeRequest._id, comparisonPayload);
+        const updatedRequestData = updatedRequestResponse?.data?.data;
+        if (updatedRequestData) {
+          setActiveRequest(updatedRequestData);
+          setRequests((prev) => prev.map((req) => isSameId(req._id, updatedRequestData._id) ? updatedRequestData : req));
+        }
+      }
+
+      if (generatePo) {
+        const awardSelections = quotationList.flatMap((quote) => (quote.quotationItems || []).filter((item) => item.isSelected).map((item) => ({ quoteId: quote._id, itemId: item.itemId })));
+        const poResponse = await purchaseOrderApi.generate({ materialRequestId: activeRequest?._id, awardSelections });
+        const poData = poResponse?.data?.data;
+        if (poData?._id) {
+          showToast('Quote saved and purchase order updated successfully.', 'success');
+          navigate('/purchase/orders');
+          return true;
+        }
+      }
+
+      showToast('Quotation comparison saved successfully.', 'success');
+      return true;
+    } catch (error) {
+      console.error('Failed to save comparison chart:', error);
+      showToast('Failed to save comparison chart. Please try again.', 'error');
+      return false;
+    } finally {
+      setIsSavingComparison(false);
+    }
+  };
+
+  const handleSaveQuote = async () => {
+    await saveComparisonChart({ generatePo: false });
+  };
+
+  const handlePrintComparison = () => {
+    document.body.classList.add('print-comparison-mode');
+    window.setTimeout(() => {
+      window.print();
+      document.body.classList.remove('print-comparison-mode');
+    }, 250);
+  };
+
+  const handleSendForMdApproval = async () => {
+    if (!activeRequest) return;
+
+    const selectedItems = quotationList.flatMap((quote) => (quote.quotationItems || [])
+      .filter((item) => item.isSelected)
+      .map((item) => ({ quoteId: quote._id, itemId: item.itemId, rate: item.rate })));
+
+    if (selectedItems.length === 0) {
+      showToast('Please select supplier items before sending for MD approval.', 'error');
+      return;
+    }
+
+    const missingSelections = Array.isArray(activeRequest.purchaseItems) && activeRequest.purchaseItems.some((item) => {
+      const normalized = normalizePurchaseItem(item);
+      const itemId = getRequestItemId(normalized);
+      return !selectedItems.some((selected) => isSameId(selected.itemId, itemId));
+    });
+    if (missingSelections) {
+      showToast('Please select a supplier for every requested item before sending for MD approval.', 'error');
+      return;
+    }
+
+    const invalidRates = selectedItems.some((selected) => Number.isNaN(parseNumericField(selected.rate)) || parseNumericField(selected.rate) <= 0);
+    if (invalidRates) {
+      showToast('Please enter valid rates for all selected supplier items before sending for MD approval.', 'error');
+      return;
+    }
+
+    setIsSendingForMdApproval(true);
+    try {
+      await saveComparisonChart({ generatePo: false });
+      const response = await comparisonApi.sendForMdApproval(activeRequest._id);
+      const updatedRequest = response?.data?.data;
+      if (updatedRequest) {
+        setActiveRequest(updatedRequest);
+        setRequests((prev) => prev.map((req) => isSameId(req._id, updatedRequest._id) ? updatedRequest : req));
+      }
+      showToast('Comparison sent for MD approval.', 'success');
+    } catch (error) {
+      console.error('Failed to send for MD approval:', error);
+      showToast('Failed to send for MD approval. Please try again.', 'error');
+    } finally {
+      setIsSendingForMdApproval(false);
+    }
+  };
+
+  const handleDownloadComparisonPdf = async () => {
+    if (!quotationList || quotationList.length === 0 || !activeRequest) return;
+    if (activeRequest.mdApprovalStatus !== 'Approved' && activeRequest.mdApproval !== 'Approved') {
+      showToast('PDF download is available only after MD approval.', 'error');
+      return;
+    }
+
+    const { jsPDF } = await import('jspdf');
+    const doc = new jsPDF({ orientation: 'landscape' });
+    const title = `Quotation Comparison${activeRequest.indentNo ? ` - ${activeRequest.indentNo}` : ''}`;
+    doc.setFontSize(16);
+    doc.text(title, 14, 20);
+    doc.setFontSize(11);
+
+    const requestDetails = [
+      `Request ID: ${activeRequest._id}`,
+      `Indent No: ${activeRequest.indentNo || 'N/A'}`,
+      `Site: ${getSiteName(activeRequest)}`,
+      `Material: ${activeRequest.material || 'N/A'}`,
+      `Created: ${activeRequest.createdAt ? new Date(activeRequest.createdAt).toLocaleString('en-GB') : 'N/A'}`,
+    ];
+
+    requestDetails.forEach((line, index) => {
+      doc.text(line, 14, 30 + index * 7);
+    });
+
+    let y = 30 + requestDetails.length * 7 + 10;
+    const sectionSpacing = 8;
+
+    quotationList.forEach((quote, quoteIndex) => {
+      if (y > 180) {
+        doc.addPage();
+        y = 20;
+      }
+
+      const supplierName = getSupplierName(quote);
+      const totalValue = getQuotationTotal(quote);
+
+      doc.setFontSize(12);
+      doc.text(`Quote ${quoteIndex + 1}: ${supplierName}`, 14, y);
+      y += sectionSpacing;
+      doc.setFontSize(10);
+      doc.text(`Quote Ref No: ${quote.quoteRefNo || 'N/A'}`, 14, y);
+      doc.text(`Delivery Date: ${quote.expectedDateOfDelivery || 'N/A'}`, 100, y);
+      y += sectionSpacing;
+      doc.text(`Payment Terms: ${quote.paymentTerms || 'N/A'}`, 14, y);
+      doc.text(`Freight: ${quote.freight || 'N/A'}`, 100, y);
+      y += sectionSpacing;
+      doc.text(`Loading: ${quote.loading || 'N/A'}`, 14, y);
+      doc.text(`Unloading: ${quote.unloading || 'N/A'}`, 100, y);
+      y += sectionSpacing;
+      doc.text(`Total Estimate: ${Number.isFinite(totalValue) ? totalValue.toFixed(2) : '0.00'}`, 14, y);
+      y += sectionSpacing + 4;
+
+      const terms = Array.isArray(quote.termsAndConditions) ? quote.termsAndConditions : [];
+      if (terms.length > 0) {
+        doc.setFontSize(10);
+        doc.text('Terms & Conditions:', 14, y);
+        y += sectionSpacing;
+        terms.forEach((term) => {
+          if (y > 180) {
+            doc.addPage();
+            y = 20;
+          }
+          const lines = doc.splitTextToSize(term, 180);
+          doc.text(lines, 18, y);
+          y += lines.length * 6;
+        });
+        y += 4;
+      }
+
+      if (y > 180 && quoteIndex < quotationList.length - 1) {
+        doc.addPage();
+        y = 20;
+      }
+    });
+
+    doc.save(`${activeRequest.indentNo || activeRequest._id}-comparison.pdf`);
+  };
+
+  const getSupplierName = (quote) => {
+    if (!quote || quote.supplierId == null) return 'Supplier';
+    if (typeof quote.supplierId === 'string') {
+      return suppliers.find((sup) => String(sup._id) === String(quote.supplierId))?.companyName || 'Supplier';
+    }
+    return quote.supplierId.companyName || quote.supplierId.name || 'Supplier';
+  };
+
+  const getRequestItemId = (item) => {
+    if (!item) return '';
+    return normalizeItemId(item.itemId?._id || item.itemId || item._id || item);
+  };
+
+  const findQuotationItem = (quote, requestItem) => {
+    if (!quote || !Array.isArray(quote.quotationItems) || !requestItem) return null;
+    const itemId = getRequestItemId(requestItem);
+    return quote.quotationItems.find((qi) => isSameId(qi.itemId, itemId));
+  };
+
+  const getQuotationTotal = (q) => {
+    const requestItems = Array.isArray(activeRequest?.purchaseItems) ? activeRequest.purchaseItems : [];
+    const itemTotal = requestItems.reduce((sum, item) => {
+      const normalizedItem = normalizePurchaseItem(item);
+      const quoteItem = findQuotationItem(q, normalizedItem);
+      if (!quoteItem) return sum;
+      const { total } = computeQuotationItemTotals(quoteItem, normalizedItem);
+      return sum + total;
+    }, 0);
+    return itemTotal;
   };
 
   const getLowestQuotation = () => {
@@ -381,42 +1132,6 @@ export default function RequestsPage() {
     }, null);
   };
 
-  useEffect(() => {
-    const assignLowestQuote = async () => {
-      if (!activeRequest || !quotationList || quotationList.length === 0) return;
-      const lowest = getLowestQuotation();
-      if (!lowest) return;
-
-      const awardedId = activeRequest.awardedQuotationId;
-
-      console.debug('[assignLowestQuote] activeRequestId:', activeRequest?._id, 'awardedId:', awardedId, 'lowestId:', lowest?._id);
-
-      // If no award set yet, assign the lowest
-      if (!awardedId) {
-        await handleAwardQuotation(lowest._id);
-        return;
-      }
-
-      // If there's an awarded quotation, check if someone reduced their total
-      const currentAwarded = quotationList.find(q => q._id === awardedId || String(q._id) === String(awardedId));
-      if (!currentAwarded) {
-        // awarded quotation not present in current list (maybe deleted) -> assign lowest
-        await handleAwardQuotation(lowest._id);
-        return;
-      }
-
-      const lowestTotal = getQuotationTotal(lowest);
-      const currentTotal = getQuotationTotal(currentAwarded);
-
-      // Reassign only when a different quotation now has a strictly lower total
-      if (String(lowest._id) !== String(currentAwarded._id) && lowestTotal < currentTotal) {
-        await handleAwardQuotation(lowest._id);
-      }
-    };
-
-    assignLowestQuote();
-  }, [activeRequest, quotationList]);
-
   const handleTermToggle = (term) => {
     setQFormData(prev => {
       const isChecked = prev.acceptedTerms.includes(term);
@@ -428,21 +1143,26 @@ export default function RequestsPage() {
     });
   };
 
-  const fetchQuotations = async () => {
-    if (!activeRequest) return;
+  const handleShowComparison = () => {
+    setShowComparison(true);
+    window.requestAnimationFrame(() => comparisonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
+
+  const fetchQuotations = useCallback(async (requestId) => {
+    if (!requestId) return;
     try {
-      const res = await quotationApi.listAll();
+      const res = await quotationApi.list({ materialRequestId: requestId, limit: 1000 });
       if (res.data.success) {
-        const filtered = (res.data.data || []).filter(q => 
-          q.materialRequestId === activeRequest._id || 
-          (q.materialRequestId && q.materialRequestId._id === activeRequest._id)
-        );
-        setQuotationList(filtered);
+        const normalizedData = (res.data.data || []).map((quote) => ({
+          ...quote,
+          quotationItems: normalizeQuotationItems(quote.quotationItems)
+        }));
+        setQuotationList(normalizedData);
       }
     } catch (err) {
       console.error('Failed to fetch quotations:', err);
     }
-  };
+  }, []);
 
   const handleDeleteClick = (id) => {
     setQuotationToDelete(id);
@@ -452,7 +1172,7 @@ export default function RequestsPage() {
     if (!quotationToDelete) return;
     try {
       await quotationApi.remove(quotationToDelete);
-      fetchQuotations();
+      setQuotationList((prev) => prev.filter((q) => String(q._id) !== String(quotationToDelete)));
       showToast('Quotation deleted successfully', 'success');
     } catch (err) {
       console.error('Failed to delete quotation:', err);
@@ -462,10 +1182,24 @@ export default function RequestsPage() {
   };
 
   useEffect(() => {
-    if (isQuotationPanelOpen && activeRequest) {
-      fetchQuotations();
+    if (!isQuotationPanelOpen || !activeRequest) return;
+    if (comparisonLoadedRequestId.current === activeRequest._id) return;
+    fetchQuotations(activeRequest._id);
+    comparisonLoadedRequestId.current = activeRequest._id;
+  }, [isQuotationPanelOpen, activeRequest, fetchQuotations]);
+
+  useEffect(() => {
+    if (!showComparison || !activeRequest) return;
+    if (comparisonLoadedRequestId.current === activeRequest._id && quotationList.length > 0) return;
+    fetchQuotations(activeRequest._id);
+    comparisonLoadedRequestId.current = activeRequest._id;
+  }, [showComparison, activeRequest, fetchQuotations, quotationList.length]);
+
+  useEffect(() => {
+    if (showComparison && quotationList.length > 0) {
+      window.requestAnimationFrame(() => comparisonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     }
-  }, [isQuotationPanelOpen, activeRequest]);
+  }, [showComparison, quotationList.length]);
 
   const getSiteName = (item) => {
     if (item.siteTypeId && item.siteTypeId.siteType) {
@@ -504,8 +1238,11 @@ export default function RequestsPage() {
     return parts.length > 1 ? `${parts[0]}...` : name;
   };
 
-  const getApprovalTimestamp = (item) => {
-    const timestamp = item.pmPdApprovalUpdatedAt || item.updatedAt || item.createdAt || null;
+  const getApprovalTimestamp = (item, approvalField = 'pmPdApproval') => {
+    if (!item) return '';
+    const status = item[approvalField] || 'Pending';
+    if (status === 'Pending') return '';
+    const timestamp = item[`${approvalField}UpdatedAt`] || item.updatedAt || item.createdAt || null;
     return timestamp ? new Date(timestamp).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
   };
 
@@ -521,40 +1258,58 @@ export default function RequestsPage() {
     return 'badge-muted'; // Low
   };
 
-  const handlePmToggle = async (id, e) => {
-    e.stopPropagation();
-    
-    // Find the current request
+  const handleApprovalToggle = async (id, approvalField, e) => {
+    if (e) e.stopPropagation();
     const requestIndex = requests.findIndex(r => r._id === id);
     if (requestIndex === -1) return;
-    
-    const currentStatus = requests[requestIndex].pmPdApproval;
+
+    const currentStatus = requests[requestIndex][approvalField] || 'Pending';
     const newStatus = currentStatus === 'Approved' ? 'Pending' : 'Approved';
     const approvalTimestamp = new Date().toISOString();
-    
-    // Optimistic update
+
     const updatedRequests = [...requests];
-    updatedRequests[requestIndex] = { ...updatedRequests[requestIndex], pmPdApproval: newStatus, pmPdApprovalUpdatedAt: approvalTimestamp };
+    const approvalFields = approvalField === 'mdApproval'
+      ? { mdApproval: newStatus, mdApprovalStatus: newStatus, comparisonStatus: newStatus === 'Approved' ? 'Approved' : 'Compared' }
+      : { [approvalField]: newStatus };
+    updatedRequests[requestIndex] = {
+      ...updatedRequests[requestIndex],
+      ...approvalFields,
+      [`${approvalField}UpdatedAt`]: approvalTimestamp,
+    };
     setRequests(updatedRequests);
-    
+
     if (activeRequest && activeRequest._id === id) {
-      setActiveRequest({ ...activeRequest, pmPdApproval: newStatus, pmPdApprovalUpdatedAt: approvalTimestamp });
+      setActiveRequest({
+        ...activeRequest,
+        ...approvalFields,
+        [`${approvalField}UpdatedAt`]: approvalTimestamp,
+      });
     }
 
     try {
-      await materialRequestApi.update(id, { pmPdApproval: newStatus, pmPdApprovalUpdatedAt: approvalTimestamp });
+      await materialRequestApi.update(id, { ...approvalFields, [`${approvalField}UpdatedAt`]: approvalTimestamp });
     } catch (err) {
-      console.error('Failed to update PM/PD approval', err);
-      // Revert on failure
+      console.error(`Failed to update ${approvalField}`, err);
       const revertRequests = [...requests];
-      revertRequests[requestIndex] = { ...revertRequests[requestIndex], pmPdApproval: currentStatus, pmPdApprovalUpdatedAt: requests[requestIndex].pmPdApprovalUpdatedAt };
+      revertRequests[requestIndex] = {
+        ...revertRequests[requestIndex],
+        [approvalField]: currentStatus,
+        [`${approvalField}UpdatedAt`]: requests[requestIndex][`${approvalField}UpdatedAt`],
+      };
       setRequests(revertRequests);
-      
+
       if (activeRequest && activeRequest._id === id) {
-        setActiveRequest({ ...activeRequest, pmPdApproval: currentStatus, pmPdApprovalUpdatedAt: requests[requestIndex].pmPdApprovalUpdatedAt });
+        setActiveRequest({
+          ...activeRequest,
+          [approvalField]: currentStatus,
+          [`${approvalField}UpdatedAt`]: requests[requestIndex][`${approvalField}UpdatedAt`],
+        });
       }
     }
   };
+
+  const handlePmToggle = async (id, e) => handleApprovalToggle(id, 'pmPdApproval', e);
+  const handleMdToggle = async (id, e) => handleApprovalToggle(id, 'mdApproval', e);
 
   const handleProductTypeChange = async (id, e) => {
     e.stopPropagation();
@@ -645,8 +1400,13 @@ export default function RequestsPage() {
                         <span style={{ color: 'var(--text-secondary)', fontSize: '9px', marginTop: '2px' }}>{getApprovalTimestamp(item)}</span>
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gridColumn: '1 / -1' }}>
-                        <span style={{ color: 'var(--text-secondary)', fontSize: '10px' }}>Admin Approval</span>
-                        <span className="badge badge-muted" style={{ fontWeight: 500, width: 'fit-content', padding: '4px 10px', fontSize: '9px', whiteSpace: 'nowrap', minWidth: '90px' }}>Coming Soon</span>
+                        <span style={{ color: 'var(--text-secondary)', fontSize: '10px' }}>MD Approval</span>
+                        {item.mdApproval === 'Approved' ? (
+                          <span className="badge badge-success" style={{ width: 'fit-content', padding: '2px 4px', fontSize: '9px' }}>Approved</span>
+                        ) : (
+                          <span className="badge badge-muted" style={{ fontWeight: 500, width: 'fit-content', padding: '2px 4px', fontSize: '9px' }}>Pending</span>
+                        )}
+                        <span style={{ color: 'var(--text-secondary)', fontSize: '9px', marginTop: '2px' }}>{getApprovalTimestamp(item, 'mdApproval')}</span>
                       </div>
                     </div>
 
@@ -677,7 +1437,7 @@ export default function RequestsPage() {
                       <th>Status</th>
                       <th>Raised By</th>
                       <th style={{ textAlign: 'center', minWidth: '120px' }}>PM/PD Approval</th>
-                      <th style={{ minWidth: '110px' }}>Admin Approval</th>
+                      <th style={{ minWidth: '110px' }}>MD Approval</th>
                       <th style={{ width: '56px', minWidth: '56px' }}></th>
                     </tr>
                   </thead>
@@ -708,7 +1468,19 @@ export default function RequestsPage() {
                           )}
                           <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '2px' }}>{getApprovalTimestamp(item)}</div>
                         </td>
-                        <td style={{ minWidth: '110px' }}><span className="badge badge-muted" style={{ fontSize: '10px', padding: '4px 10px', minWidth: '90px', whiteSpace: 'nowrap' }}>Coming Soon</span></td>
+                        <td style={{ minWidth: '110px' }}>
+                          {item.mdApproval === 'Approved' ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span className="badge badge-success" style={{ fontSize: '10px', padding: '4px 10px', minWidth: '90px' }}>Approved</span>
+                              <div style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{getApprovalTimestamp(item, 'mdApproval')}</div>
+                            </div>
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <span className="badge badge-muted" style={{ fontSize: '10px', padding: '4px 10px', minWidth: '90px' }}>Pending</span>
+                              <div style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{getApprovalTimestamp(item, 'mdApproval')}</div>
+                            </div>
+                          )}
+                        </td>
                         <td style={{ width: '56px', minWidth: '56px' }}>
                           <button className="badge-btn" title="Add Purchased Item" onClick={() => openPanel(item)}>
                             <Eye size={16} />
@@ -817,11 +1589,18 @@ export default function RequestsPage() {
                         <CheckCircle size={24} strokeWidth={activeRequest.pmPdApproval === 'Approved' ? 2.5 : 2} />
                         {activeRequest.pmPdApproval === 'Approved' && <span style={{ marginLeft: '8px', fontSize: '13px', fontWeight: 600, color: 'var(--success)' }}>Approved</span>}
                       </button>
+                      <span style={{ color: 'var(--text-secondary)', fontSize: '10px' }}>{getApprovalTimestamp(activeRequest, 'pmPdApproval')}</span>
                     </div>
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gridColumn: '1 / -1' }}>
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '11px', marginBottom: '4px', fontWeight: 600 }}>Admin Approval</span>
-                    <span className="badge badge-muted" style={{ fontWeight: 500, width: 'fit-content', padding: '2px 4px', fontSize: '9px' }}>Coming Soon</span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gridColumn: '1 / -1', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-color)' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '11px', marginBottom: '8px', fontWeight: 600 }}>MD Approval</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '4px' }}>
+                      <button onClick={(e) => handleMdToggle(activeRequest._id, e)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: activeRequest.mdApproval === 'Approved' ? 'var(--success)' : 'var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'flex-start', padding: 0 }} title={activeRequest.mdApproval === 'Approved' ? 'Approved' : 'Click to Approve'}>
+                        <CheckCircle size={24} strokeWidth={activeRequest.mdApproval === 'Approved' ? 2.5 : 2} />
+                        {activeRequest.mdApproval === 'Approved' && <span style={{ marginLeft: '8px', fontSize: '13px', fontWeight: 600, color: 'var(--success)' }}>Approved</span>}
+                      </button>
+                      <span style={{ color: 'var(--text-secondary)', fontSize: '10px' }}>{getApprovalTimestamp(activeRequest, 'mdApproval')}</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -839,7 +1618,7 @@ export default function RequestsPage() {
                       <th>Status</th>
                       <th>Raised By</th>
                       <th style={{ textAlign: 'center' }}>PM/PD Approval</th>
-                      <th>Admin Approval</th>
+                      <th>MD Approval</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -871,7 +1650,11 @@ export default function RequestsPage() {
                           <CheckCircle size={20} strokeWidth={activeRequest.pmPdApproval === 'Approved' ? 2.5 : 2} />
                         </button>
                       </td>
-                      <td><span className="badge badge-muted" style={{ fontSize: '10px' }}>Coming Soon</span></td>
+                      <td style={{ textAlign: 'center' }}>
+                        <button onClick={(e) => handleMdToggle(activeRequest._id, e)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: activeRequest.mdApproval === 'Approved' ? 'var(--success)' : 'var(--border-color)' }} title={activeRequest.mdApproval === 'Approved' ? 'Approved' : 'Click to Approve'}>
+                          <CheckCircle size={20} strokeWidth={activeRequest.mdApproval === 'Approved' ? 2.5 : 2} />
+                        </button>
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -904,42 +1687,88 @@ export default function RequestsPage() {
                   onMouseOut={(e) => e.currentTarget.style.opacity = '1'}
                 >
                   <Plus size={18} strokeWidth={2.5} />
-                  <span style={{ fontSize: '14px', fontWeight: 600 }}>Add New Tender Item</span>
+                  <span style={{ fontSize: '14px', fontWeight: 600 }}>Add New Item</span>
                 </button>
               </div>
               <div className="table-wrapper" style={{ margin: 0 }}>
                 <table className="data-table" style={{ fontSize: '13px', margin: 0 }}>
                   <thead>
                     <tr>
-                      <th style={{ width: '56px', whiteSpace: 'nowrap' }}>S. No</th>
-                      <th>Item Category</th>
-                      <th>Item Code</th>
-                      <th>Item Name</th>
+                      <th style={{ width: '56px', whiteSpace: 'nowrap' }}>Sno</th>
+                      <th>Category</th>
+                      <th>Name</th>
+                      <th>BOQ Rate</th>
+                      <th>Quantity</th>
                       <th>Unit</th>
-                      <th>Tax</th>
+                      <th>Approved Qty</th>
+                      <th>Remarks</th>
+                      <th style={{ width: '110px', textAlign: 'center' }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {activeRequest?.purchaseItems && activeRequest.purchaseItems.length > 0 ? (
                       activeRequest.purchaseItems.map((item, index) => {
-                        // Attempt to resolve populated names if they are objects, else fallback or show ID
-                        const cat = typeof item.itemCategoryId === 'object' ? (item.itemCategoryId?.categoryName || item.itemCategoryId?.code) : (itemCategories.find(c => c._id === item.itemCategoryId)?.categoryName || item.itemCategoryId);
-                        const uom = typeof item.itemUomId === 'object' ? (item.itemUomId?.uomName || item.itemUomId?.code) : (itemUOMs.find(u => u._id === item.itemUomId)?.uomName || item.itemUomId);
-                        
+                        const displayItem = normalizePurchaseItem(item);
+                        const cat = typeof displayItem.itemCategoryId === 'object' ? (displayItem.itemCategoryId?.categoryName || displayItem.itemCategoryId?.code) : (itemCategories.find(c => c._id === displayItem.itemCategoryId)?.categoryName || displayItem.itemCategoryId);
+                        const uom = typeof displayItem.itemUomId === 'object' ? (displayItem.itemUomId?.uomName || displayItem.itemUomId?.code) : (itemUOMs.find(u => u._id === displayItem.itemUomId)?.uomName || displayItem.itemUomId);
+                        const boqRate = displayItem.boqRate !== undefined ? displayItem.boqRate : '-';
+                        const quantity = displayItem.quantity !== undefined ? displayItem.quantity : '-';
+                        const approvedQty = displayItem.approvedQty !== undefined ? displayItem.approvedQty : '';
+                        const remarks = displayItem.remarks || '';
+
                         return (
-                          <tr key={item._id || index}>
+                          <tr key={`${displayItem._id || 'item'}-${index}`}>
                             <td style={{ padding: '10px 16px' }}>{index + 1}</td>
                             <td style={{ padding: '10px 16px' }}>{cat || '-'}</td>
-                            <td style={{ padding: '10px 16px' }}>{item.code || '-'}</td>
                             <td style={{ padding: '10px 16px' }}>{item.itemName || '-'}</td>
+                            <td style={{ padding: '10px 16px' }}>{boqRate}</td>
+                            <td style={{ padding: '10px 16px' }}>{quantity}</td>
                             <td style={{ padding: '10px 16px' }}>{uom || '-'}</td>
-                            <td style={{ padding: '10px 16px' }}>{item.tax !== undefined ? item.tax + '%' : '-'}</td>
+                            <td style={{ padding: '10px 16px' }}>
+                              <input
+                                type="number"
+                                min="0"
+                                value={approvedQty}
+                                onChange={(e) => handlePurchaseItemFieldChange(index, 'approvedQty', e.target.value)}
+                                onBlur={handlePurchaseItemFieldBlur}
+                                placeholder="Approved Qty"
+                                style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px' }}
+                              />
+                            </td>
+                            <td style={{ padding: '10px 16px' }}>
+                              <input
+                                type="text"
+                                value={remarks}
+                                onChange={(e) => handlePurchaseItemFieldChange(index, 'remarks', e.target.value)}
+                                onBlur={handlePurchaseItemFieldBlur}
+                                placeholder="Remarks"
+                                style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px' }}
+                              />
+                            </td>
+                            <td style={{ width: '110px', padding: '8px 16px', textAlign: 'center', verticalAlign: 'middle' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px', minHeight: '32px' }}>
+                                <button
+                                  onClick={() => handleEditTenderedItem(item, index)}
+                                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--primary-color)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '4px' }}
+                                  title="Edit"
+                                >
+                                  <Edit size={16} />
+                                </button>
+                                <button
+                                  onClick={() => handleRemoveTenderedItem(index)}
+                                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--danger, #ef4444)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '4px' }}
+                                  title="Delete"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            </td>
                           </tr>
                         );
                       })
                     ) : (
                       <tr>
-                        <td colSpan="5" style={{ textAlign: 'center', padding: '16px', color: 'var(--text-primary)', fontWeight: 500 }}>No items added yet.</td>
+                        <td colSpan="9" style={{ textAlign: 'center', padding: '16px', color: 'var(--text-primary)', fontWeight: 500 }}>No items added yet.</td>
                       </tr>
                     )}
                   </tbody>
@@ -1045,55 +1874,9 @@ export default function RequestsPage() {
                     <button onClick={() => setIsAddTenderedItemPopupOpen(false)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '24px', color: 'var(--text-secondary)', lineHeight: 1 }}>&times;</button>
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, minmax(0, 1fr))', gap: '12px', alignItems: 'stretch' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(5, minmax(0, 1fr))', gap: '12px', alignItems: 'flex-end', marginBottom: '20px' }}>
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <label style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Item Category</label>
-                      <select
-                        value={formData.categoryId}
-                        onChange={(e) => setFormData({ ...formData, categoryId: e.target.value, selectedItemId: '' })}
-                        style={{ padding: '8px 10px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px' }}
-                      >
-                        <option value="">Select category</option>
-                        {itemCategories.map((c) => (
-                          <option key={c._id} value={c._id}>{c.categoryName || c.code || c.name}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <label style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Item Code</label>
-                      <select
-                        value={formData.selectedItemId || ''}
-                        onChange={(e) => {
-                          const id = e.target.value;
-                          if (!id) {
-                            setFormData({ ...formData, selectedItemId: '', itemCode: '', itemName: '', uomId: '', taxValue: '' });
-                          } else {
-                            const selected = items.find(it => it._id === id);
-                            if (selected) {
-                              setFormData({
-                                ...formData,
-                                selectedItemId: id,
-                                itemCode: selected.code || '',
-                                itemName: selected.itemName || '',
-                                uomId: selected.itemUomId?._id || selected.itemUomId || '',
-                                taxValue: selected.tax !== undefined ? String(selected.tax) : '',
-                                categoryId: selected.itemCategoryId?._id || selected.itemCategoryId || formData.categoryId
-                              });
-                            }
-                          }
-                        }}
-                        style={{ padding: '12px 12px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '14px' }}
-                      >
-                        <option value="">Select item</option>
-                        {items.map((it) => (
-                          <option key={it._id} value={it._id}>{it.code || it.itemName || it._id}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <label style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Item Name</label>
+                      <label style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Choose Item</label>
                       <select
                         value={formData.selectedItemId || ''}
                         onChange={(e) => {
@@ -1115,42 +1898,51 @@ export default function RequestsPage() {
                             }
                           }
                         }}
-                        style={{ padding: '12px 12px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '14px' }}
+                        style={{ padding: '12px 12px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', minHeight: '44px', fontSize: '14px' }}
                       >
-                        <option value="">Select item</option>
+                        <option value="">Choose Item</option>
                         {items.map((it) => (
                           <option key={it._id} value={it._id}>{it.itemName || it.code || it._id}</option>
                         ))}
                       </select>
                     </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gridColumn: isMobile ? '1 / -1' : 'span 1' }}>
-                      <label style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Unit</label>
-                      <select
-                        value={formData.uomId}
-                        onChange={(e) => setFormData({ ...formData, uomId: e.target.value })}
-                        style={{ padding: '8px 10px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px' }}
-                      >
-                        <option value="">Select unit</option>
-                        {itemUOMs.map((u) => (
-                          <option key={u._id} value={u._id}>{u.uomName || u.code || u.name}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gridColumn: isMobile ? '1 / -1' : 'span 1' }}>
-                      <label style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Tax</label>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <label style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Specification</label>
                       <input
                         type="text"
-                        placeholder="Enter tax (e.g. 18%)"
-                        value={formData.taxValue}
-                        onChange={(e) => setFormData({ ...formData, taxValue: e.target.value })}
-                        style={{ padding: '8px 10px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px' }}
+                        value={formData.specification}
+                        onChange={(e) => setFormData({ ...formData, specification: e.target.value })}
+                        placeholder="Specification"
+                        style={{ padding: '12px 12px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '14px' }}
                       />
                     </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gridColumn: '1 / -1', alignItems: isMobile ? 'stretch' : 'flex-end' }}>
-                      <button className="btn-primary" onClick={handleAddTenderedItem} style={{ width: isMobile ? '100%' : '230px', padding: '12px 18px', border: 'none', borderRadius: '12px', cursor: 'pointer', fontWeight: 600, fontSize: '15px', minHeight: '44px' }}>Add New Tender Item</button>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <label style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Quantity</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={formData.quantity}
+                        onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
+                        placeholder="Quantity"
+                        style={{ padding: '12px 12px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '14px' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <label style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '6px' }}>BOQ Rate</label>
+                      <input
+                        type="text"
+                        value={formData.boqRate}
+                        onChange={(e) => setFormData({ ...formData, boqRate: e.target.value })}
+                        placeholder="BOQ Rate"
+                        style={{ padding: '12px 12px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '14px' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <button className="btn-primary" onClick={handleAddTenderedItem} style={{ width: '100%', padding: '12px 18px', border: 'none', borderRadius: '10px', cursor: 'pointer', fontWeight: 600, fontSize: '14px', minHeight: '44px' }}>{editingTenderedItemIndex !== null ? 'Update' : 'Save'}</button>
                     </div>
                   </div>
                 </div>
@@ -1205,18 +1997,14 @@ export default function RequestsPage() {
             </div>
             
             {isTermsOpen && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px', marginBottom: '20px', background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
-                {TERMS.map((term, idx) => (
-                  <label key={idx} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-primary)' }}>
-                    <input 
-                      type="checkbox" 
-                      checked={qFormData.acceptedTerms.includes(term)}
-                      onChange={() => handleTermToggle(term)}
-                      style={{ marginTop: '3px' }}
-                    />
-                    <span style={{ lineHeight: '1.4' }}>{idx + 1}) {term}</span>
-                  </label>
-                ))}
+              <div style={{ padding: '16px', marginBottom: '20px', background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+                <textarea
+                  className="form-textarea"
+                  rows={4}
+                  value={qFormData.termsAndConditions}
+                  onChange={(e) => setQFormData((prev) => ({ ...prev, termsAndConditions: e.target.value }))}
+                  placeholder="Enter terms and conditions here..."
+                />
               </div>
             )}
 
@@ -1303,11 +2091,11 @@ export default function RequestsPage() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 <label style={{ fontWeight: 600, marginBottom: '8px', color: 'var(--text-primary)' }}>
-                  Loading Location
+                  Loading Charges
                 </label>
                 <input
                   type="text"
-                  placeholder="Enter Loading Location"
+                  placeholder="Enter Loading Charges"
                   value={qFormData.loading}
                   onChange={(e) => setQFormData({ ...qFormData, loading: e.target.value })}
                   className="form-input"
@@ -1315,11 +2103,11 @@ export default function RequestsPage() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 <label style={{ fontWeight: 600, marginBottom: '8px', color: 'var(--text-primary)' }}>
-                  Unloading Location
+                  Unloading Charges
                 </label>
                 <input
                   type="text"
-                  placeholder="Enter Unloading Location"
+                  placeholder="Enter Unloading Charges"
                   value={qFormData.unloading}
                   onChange={(e) => setQFormData({ ...qFormData, unloading: e.target.value })}
                   className="form-input"
@@ -1342,7 +2130,7 @@ export default function RequestsPage() {
                       Uploaded file{qFormData.existingFileUrls.length > 1 ? 's' : ''}:
                     </span>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      {qFormData.existingFileUrls.map((url, idx) => (
+                      {qFormData.existingFileUrls.slice().reverse().map((url, idx) => (
                         <a
                           key={idx}
                           href={url}
@@ -1360,7 +2148,7 @@ export default function RequestsPage() {
               <div style={{ display: 'flex', alignItems: 'flex-end' }}>
                 <button
                   onClick={handleQuotationSubmit}
-                  disabled={isSubmittingQuotation || qFormData.acceptedTerms.length !== TERMS.length}
+                  disabled={isSubmittingQuotation}
                   className="btn btn-primary"
                   style={{ width: '100%' }}
                 >
@@ -1371,19 +2159,8 @@ export default function RequestsPage() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(5, minmax(0, 1fr))', gap: '20px', alignItems: 'center', marginBottom: '16px' }}>
               <div style={{ gridColumn: isMobile ? 'auto' : 'span 4', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <input
-                  type="checkbox"
-                  checked={qFormData.acceptedTerms.length === TERMS.length}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      setQFormData(prev => ({ ...prev, acceptedTerms: [...TERMS] }));
-                    } else {
-                      setQFormData(prev => ({ ...prev, acceptedTerms: [] }));
-                    }
-                  }}
-                />
                 <label style={{ fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
-                  Accept All Terms & Conditions
+                  Enter Terms & Conditions manually above
                 </label>
               </div>
             </div>
@@ -1393,7 +2170,7 @@ export default function RequestsPage() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border-color)' }}>
                 <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '600' }}>Submitted Quotations</h3>
                 <button
-                  onClick={() => setShowComparison(prev => !prev)}
+                  onClick={showComparison ? () => setShowComparison(false) : handleShowComparison}
                   className="btn btn-secondary"
                   style={{ padding: '6px 12px', borderRadius: '6px' }}
                   disabled={quotationList.length === 0}
@@ -1413,7 +2190,7 @@ export default function RequestsPage() {
                       <th style={{ padding: '10px 16px', textAlign: 'left' }}>Freight</th>
                       <th style={{ padding: '10px 16px', textAlign: 'left' }}>Loading</th>
                       <th style={{ padding: '10px 16px', textAlign: 'left' }}>Unloading</th>
-                      <th style={{ padding: '10px 16px', textAlign: 'left' }}>Total</th>
+                      {/* Total column removed per requirement */}
                       <th style={{ padding: '10px 16px', textAlign: 'left' }}>File</th>
                       <th style={{ padding: '10px 16px', textAlign: 'left' }}>Status</th>
                       <th style={{ padding: '10px 16px', textAlign: 'left' }}>Options</th>
@@ -1426,27 +2203,35 @@ export default function RequestsPage() {
                       quotationList.map((q, idx) => (
                         <tr key={q._id} style={{ borderBottom: '1px solid var(--border-color)' }}>
                           <td style={{ padding: '10px 16px' }}>{idx + 1}</td>
-                          <td style={{ padding: '10px 16px' }}>{q.supplierId?.companyName || 'Unknown'}</td>
+                          <td style={{ padding: '10px 16px' }}>{q.supplierId?.companyName || (typeof q.supplierId === 'string' ? (suppliers.find((sup) => String(sup._id) === String(q.supplierId))?.companyName || 'Unknown') : 'Unknown')}</td>
                           <td style={{ padding: '10px 16px' }}>{q.expectedDateOfDelivery}</td>
                           <td style={{ padding: '10px 16px' }}>{q.quoteRefNo}</td>
                           <td style={{ padding: '10px 16px' }}>{q.paymentTerms}</td>
                           <td style={{ padding: '10px 16px' }}>{q.freight}</td>
                           <td style={{ padding: '10px 16px' }}>{q.loading}</td>
                           <td style={{ padding: '10px 16px' }}>{q.unloading}</td>
-                          <td style={{ padding: '10px 16px', fontWeight: 600 }}>{getQuotationTotal(q).toFixed(2)}</td>
+                          {/* Total column removed per requirement */}
                           <td style={{ padding: '10px 16px' }}>
                             {q.fileUrl && q.fileUrl.length > 0 ? (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <a href={`${window.location.origin}${q.fileUrl[0]}`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary-color)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <a href={`${window.location.origin}${Array.isArray(q.fileUrl) ? q.fileUrl[q.fileUrl.length - 1] : q.fileUrl}`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary-color)', display: 'flex', alignItems: 'center', gap: '4px' }}>
                                   <FileText size={16} /> View
                                 </a>
-                                {q.fileUrl.length > 1 && <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>+{q.fileUrl.length - 1} more</span>}
+                                {Array.isArray(q.fileUrl) && q.fileUrl.length > 1 && <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>+{q.fileUrl.length - 1} more</span>}
                               </div>
                             ) : '-'}
                           </td>
                           <td style={{ padding: '10px 16px' }}>
-                            {activeRequest?.awardedQuotationId === q._id ? (
+                            {isSameId(activeRequest?.awardedQuotationId, q._id) ? (
                               <span style={{ background: '#d1fae5', color: '#065f46', padding: '4px 10px', borderRadius: '9999px', fontWeight: 600 }}>Awarded</span>
+                            ) : isSameId(getLowestQuotation()?._id, q._id) ? (
+                              <button
+                                onClick={() => handleAwardQuotation(q._id)}
+                                style={{ background: '#2563eb', border: 'none', color: '#fff', borderRadius: '6px', padding: '6px 10px', cursor: 'pointer' }}
+                                title="Award this lowest quote"
+                              >
+                                Award Lowest
+                              </button>
                             ) : (
                               <span style={{ color: 'var(--text-secondary)' }}>Pending</span>
                             )}
@@ -1469,199 +2254,192 @@ export default function RequestsPage() {
               </div>
             </div>
 
-            {showComparison && quotationList.length > 0 && (
-              <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <div style={{ background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border-color)' }}>
-                    <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '600' }}>Full Comparison</h3>
-                    <button
-                      onClick={() => setShowComparison(false)}
-                      className="btn btn-secondary"
-                      style={{ padding: '6px 12px', borderRadius: '6px' }}
-                    >
-                      Hide Comparison
-                    </button>
+            {quotationList.length > 0 && (
+              <section ref={comparisonRef} className="quotation-comparison-section" aria-label="Quotation comparison">
+                <div className="compare-modal-content">
+                  <div className="compare-modal-header">
+                    <div>
+                      <h3>Quotation Items</h3>
+                      <div className="compare-modal-subtitle">Tendered Materials</div>
+                    </div>
+                    <div className="compare-modal-actions">
+                      <button onClick={handleSaveQuote} disabled={isSavingComparison} className="btn btn-primary compare-modal-action-btn">
+                        {isSavingComparison ? 'Saving...' : 'Save Quote'}
+                      </button>
+                      <button onClick={handleSendForMdApproval} disabled={isSavingComparison} className="btn btn-primary compare-modal-action-btn">
+                        {isSavingComparison ? 'Sending...' : 'Send for MD Approval'}
+                      </button>
+                      <button onClick={handlePrintComparison} className="btn btn-secondary compare-modal-action-btn">
+                        Print Comparison Chart
+                      </button>
+                      <button
+                        onClick={handleDownloadComparisonPdf}
+                        disabled={activeRequest?.mdApprovalStatus !== 'Approved' && activeRequest?.mdApproval !== 'Approved'}
+                        className="btn btn-secondary compare-modal-action-btn"
+                        title={activeRequest?.mdApprovalStatus === 'Approved' || activeRequest?.mdApproval === 'Approved' ? 'Download comparison PDF' : 'Available after MD approval'}
+                      >
+                        Download PDF
+                      </button>
+                    </div>
                   </div>
-                  <div style={{ overflowX: 'auto' }}>
-                    <table className="data-table" style={{ width: '100%', minWidth: '900px', borderCollapse: 'collapse' }}>
+                  <div className="compare-modal-body">
+                    <table className="data-table compare-modal-table">
                       <thead>
                         <tr>
-                          <th style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>Field</th>
+                          <th rowSpan={2} style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>Sno</th>
+                          <th rowSpan={2} style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>Schedule</th>
+                          <th rowSpan={2} style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>Category</th>
+                          <th rowSpan={2} style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>Name</th>
+                          <th rowSpan={2} style={{ padding: '10px 16px', textAlign: 'center', background: 'var(--bg-primary)' }}>Approved Qty</th>
+                          <th rowSpan={2} style={{ padding: '10px 16px', textAlign: 'center', background: 'var(--bg-primary)' }}>UOM</th>
+                          <th rowSpan={2} style={{ padding: '10px 16px', textAlign: 'right', background: 'var(--bg-primary)' }}>BOQ Rate</th>
                           {quotationList.map((q) => (
-                            <th key={q._id} style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>
-                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                                <span>{q.supplierId?.companyName || 'Supplier'}</span>
-                                <button
-                                  onClick={() => handleAwardQuotation(q._id)}
-                                  style={{ background: activeRequest?.awardedQuotationId === q._id ? '#d1fae5' : 'var(--primary-color)', color: activeRequest?.awardedQuotationId === q._id ? '#065f46' : '#fff', border: 'none', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', fontWeight: 600, cursor: 'pointer' }}
-                                >
-                                  {activeRequest?.awardedQuotationId === q._id ? 'Approved' : 'Approve'}
-                                </button>
+                            <th key={q._id} colSpan={4} style={{ padding: '10px 16px', textAlign: 'center', background: 'var(--bg-primary)' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                                <strong>{getSupplierName(q)}</strong>
                               </div>
                             </th>
                           ))}
                         </tr>
+                        <tr>
+                          {quotationList.map((q) => (
+                            <Fragment key={`${q._id}-sub`}>
+                              <th style={{ padding: '10px 16px', textAlign: 'center', background: 'var(--bg-primary)' }}>GST</th>
+                              <th style={{ padding: '10px 16px', textAlign: 'center', background: 'var(--bg-primary)' }}>Rate</th>
+                              <th style={{ padding: '10px 16px', textAlign: 'center', background: 'var(--bg-primary)' }}>Tax</th>
+                              <th style={{ padding: '10px 16px', textAlign: 'center', background: 'var(--bg-primary)' }}>Total</th>
+                            </Fragment>
+                          ))}
+                        </tr>
                       </thead>
                       <tbody>
-                        {[
-                          { label: 'Quote Reference', value: (q) => q.quoteRefNo },
-                          { label: 'Delivery Date', value: (q) => q.expectedDateOfDelivery },
-                          { label: 'Payment Terms', value: (q) => q.paymentTerms },
-                          { label: 'Freight', value: (q) => q.freight },
-                          { label: 'Loading', value: (q) => q.loading },
-                          { label: 'Unloading', value: (q) => q.unloading },
-                          { label: 'Total', value: (q) => {
-                              const freight = parseNumericField(q?.freight);
-                              const loading = parseNumericField(q?.loading);
-                              const unloading = parseNumericField(q?.unloading);
-                              return freight + loading + unloading;
-                            }
-                          }
-                        ].map((row) => (
-                          <tr key={row.label} style={{ borderTop: '1px solid var(--border-color)' }}>
-                            <td style={{ padding: '10px 16px', fontWeight: 600, background: 'var(--bg-primary)' }}>{row.label}</td>
-                            {quotationList.map((q) => (
-                              <td key={`${q._id}-${row.label}`} style={{ padding: '10px 16px' }}>{row.label === 'Total' ? row.value(q).toFixed(2) : row.value(q) || '-'}</td>
-                            ))}
-                          </tr>
-                        ))}
+                        {Array.isArray(activeRequest?.purchaseItems) && activeRequest.purchaseItems.length > 0 ? (
+                          activeRequest.purchaseItems.map((item, index) => {
+                            const displayItem = normalizePurchaseItem(item);
+                            const schedule = displayItem.schedule || displayItem.scheduleName || '-';
+                            const cat = typeof displayItem.itemCategoryId === 'object' ? (displayItem.itemCategoryId?.categoryName || displayItem.itemCategoryId?.code) : (itemCategories.find(c => c._id === displayItem.itemCategoryId)?.categoryName || displayItem.itemCategoryId);
+                            const approvedQty = displayItem.approvedQty !== undefined && displayItem.approvedQty !== null ? displayItem.approvedQty : (displayItem.quantity || 0);
+                            const boqRate = displayItem.boqRate !== undefined && displayItem.boqRate !== null ? displayItem.boqRate : '-';
+                            const uomName = getItemUomName(displayItem, itemUOMs);
+
+                            return (
+                              <tr key={`compare-row-${index}`} style={{ borderTop: '1px solid var(--border-color)' }}>
+                                <td style={{ padding: '6px 10px' }}>{index + 1}</td>
+                                <td style={{ padding: '6px 10px' }}>{schedule}</td>
+                                <td style={{ padding: '6px 10px' }}>{cat || '-'}</td>
+                                <td style={{ padding: '6px 10px' }}>{displayItem.itemName || '-'}</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'center', color: '#10b981', fontWeight: 700 }}>{approvedQty}</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'center' }}>{uomName}</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'right' }}>{boqRate}</td>
+                                {quotationList.map((q) => {
+                                  const currentItemId = getRequestItemId(displayItem);
+                                  const quotationItem = findQuotationItem(q, displayItem) || { itemId: currentItemId, rate: '', taxPercent: 0, isSelected: false };
+                                  const rateValue = quotationItem?.rate ?? '';
+                                  const taxPercentValue = quotationItem?.taxPercent ?? 0;
+                                  const { taxAmount, total } = computeQuotationItemTotals(quotationItem, displayItem);
+                                  const gstEnabled = parseNumericField(taxPercentValue) > 0;
+                                  const isSelected = quotationItem?.isSelected === true;
+                                  return (
+                                    <Fragment key={`${q._id}-cells-${index}`}>
+                                      <td style={{ padding: '6px 10px', background: isSelected ? 'rgba(16, 185, 129, 0.12)' : 'transparent' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={gstEnabled}
+                                            onChange={(e) => handleComparisonToggleGST(q._id, currentItemId, e.target.checked)}
+                                            aria-label="Enable GST"
+                                          />
+                                          <input
+                                            type="number"
+                                            inputMode="decimal"
+                                            value={taxPercentValue ?? ''}
+                                            onChange={(e) => handleComparisonFieldChange(q._id, currentItemId, 'taxPercent', e.target.value)}
+                                            style={{ width: '72px', padding: '4px 6px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}
+                                          />
+                                        </div>
+                                      </td>
+                                      <td style={{ padding: '6px 10px', background: isSelected ? 'rgba(16, 185, 129, 0.12)' : 'transparent' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={isSelected}
+                                            onChange={(e) => handleMaterialSelectionChange(q._id, currentItemId, e.target.checked)}
+                                            aria-label="Award item to supplier"
+                                          />
+                                          <input
+                                            type="number"
+                                            inputMode="decimal"
+                                            value={rateValue ?? ''}
+                                            max={getBoqRate(displayItem) ?? undefined}
+                                            title={getBoqRate(displayItem) !== null ? `Maximum supplier rate: ${getBoqRate(displayItem)}` : undefined}
+                                            onChange={(e) => handleComparisonFieldChange(q._id, currentItemId, 'rate', e.target.value)}
+                                            style={{ width: '84px', padding: '4px 6px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}
+                                          />
+                                        </div>
+                                      </td>
+                                      <td style={{ padding: '6px 10px', textAlign: 'right', background: isSelected ? 'rgba(16, 185, 129, 0.12)' : 'transparent' }}>{taxAmount.toFixed(2)}</td>
+                                      <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 600, background: isSelected ? 'rgba(16, 185, 129, 0.12)' : 'transparent' }}>{total.toFixed(2)}</td>
+                                    </Fragment>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })
+                        ) : (
+                          <tr><td colSpan={7 + quotationList.length * 4} style={{ padding: '16px', textAlign: 'center', color: 'var(--text-secondary)' }}>No purchase items available for comparison.</td></tr>
+                        )}
                       </tbody>
+                      <tfoot>
+                        <tr style={{ borderTop: '2px solid var(--border-color)' }}>
+                          <td colSpan={7} style={{ padding: '10px 16px', fontWeight: 700, textAlign: 'right' }}>Sub Total</td>
+                          {quotationList.map((q) => {
+                            const { subTotal } = getQuotationSummary(q);
+                            return (
+                              <td key={`${q._id}-sub-total`} colSpan={4} style={{ padding: '10px 16px', textAlign: 'right', fontWeight: 700 }}>{subTotal.toFixed(2)}</td>
+                            );
+                          })}
+                        </tr>
+                        <tr>
+                          <td colSpan={7} style={{ padding: '10px 16px', fontWeight: 700, textAlign: 'right' }}>Freight</td>
+                          {quotationList.map((q) => {
+                            const { freight } = getQuotationSummary(q);
+                            return (
+                              <td key={`${q._id}-freight`} colSpan={4} style={{ padding: '10px 16px', textAlign: 'right', fontWeight: 700 }}>{freight.toFixed(2)}</td>
+                            );
+                          })}
+                        </tr>
+                        <tr>
+                          <td colSpan={7} style={{ padding: '10px 16px', fontWeight: 700, textAlign: 'right' }}>Loading</td>
+                          {quotationList.map((q) => {
+                            const { loading } = getQuotationSummary(q);
+                            return (
+                              <td key={`${q._id}-loading`} colSpan={4} style={{ padding: '10px 16px', textAlign: 'right', fontWeight: 700 }}>{loading.toFixed(2)}</td>
+                            );
+                          })}
+                        </tr>
+                        <tr>
+                          <td colSpan={7} style={{ padding: '10px 16px', fontWeight: 700, textAlign: 'right' }}>Unloading</td>
+                          {quotationList.map((q) => {
+                            const { unloading } = getQuotationSummary(q);
+                            return (
+                              <td key={`${q._id}-unloading`} colSpan={4} style={{ padding: '10px 16px', textAlign: 'right', fontWeight: 700 }}>{unloading.toFixed(2)}</td>
+                            );
+                          })}
+                        </tr>
+                        <tr style={{ background: 'rgba(15, 23, 42, 0.04)' }}>
+                          <td colSpan={7} style={{ padding: '12px 16px', fontWeight: 800, textAlign: 'right' }}>Total</td>
+                          {quotationList.map((q) => {
+                            const { grandTotal } = getQuotationSummary(q);
+                            return (
+                              <td key={`${q._id}-grand-total`} colSpan={4} style={{ padding: '12px 16px', textAlign: 'right', fontWeight: 800 }}>{grandTotal.toFixed(2)}</td>
+                            );
+                          })}
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>
                 </div>
-
-                {quotationList.length > 2 && (
-                  <div style={{ background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                    <div style={{ padding: '12px 16px', background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border-color)' }}>
-                      <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '600' }}>Split Comparison (2 at a time)</h3>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px' }}>
-                      {Array.from({ length: Math.ceil(quotationList.length / 2) }, (_, index) => {
-                        const group = quotationList.slice(index * 2, index * 2 + 2);
-                        return (
-                          <div key={`group-${index}`} style={{ border: '1px solid var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
-                            <div style={{ padding: '10px 12px', background: 'var(--bg-elevated)', fontWeight: 600, fontSize: '13px' }}>
-                              Group {index + 1}: {group.map((q) => q.supplierId?.companyName || 'Supplier').join(' vs ')}
-                            </div>
-                            <div style={{ overflowX: 'auto' }}>
-                              <table className="data-table" style={{ width: '100%', minWidth: '700px', borderCollapse: 'collapse' }}>
-                                <thead>
-                                  <tr>
-                                    <th style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>Field</th>
-                                    {group.map((q) => (
-                                      <th key={`${q._id}-pair`} style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                                          <span>{q.supplierId?.companyName || 'Supplier'}</span>
-                                          <button
-                                            onClick={() => handleAwardQuotation(q._id)}
-                                            style={{ background: activeRequest?.awardedQuotationId === q._id ? '#d1fae5' : 'var(--primary-color)', color: activeRequest?.awardedQuotationId === q._id ? '#065f46' : '#fff', border: 'none', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', fontWeight: 600, cursor: 'pointer' }}
-                                          >
-                                            {activeRequest?.awardedQuotationId === q._id ? 'Approved' : 'Approve'}
-                                          </button>
-                                        </div>
-                                      </th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {[
-                                    { label: 'Quote Reference', value: (q) => q.quoteRefNo },
-                                    { label: 'Delivery Date', value: (q) => q.expectedDateOfDelivery },
-                                    { label: 'Payment Terms', value: (q) => q.paymentTerms },
-                                    { label: 'Freight', value: (q) => q.freight },
-                                    { label: 'Loading', value: (q) => q.loading },
-                                    { label: 'Unloading', value: (q) => q.unloading },
-                                    { label: 'Total', value: (q) => {
-                                        const freight = parseNumericField(q?.freight);
-                                        const loading = parseNumericField(q?.loading);
-                                        const unloading = parseNumericField(q?.unloading);
-                                        return freight + loading + unloading;
-                                      }
-                                    }
-                                  ].map((row) => (
-                                    <tr key={`${row.label}-${index}`} style={{ borderTop: '1px solid var(--border-color)' }}>
-                                      <td style={{ padding: '10px 16px', fontWeight: 600, background: 'var(--bg-primary)' }}>{row.label}</td>
-                                      {group.map((q) => (
-                                        <td key={`${q._id}-${row.label}-${index}`} style={{ padding: '10px 16px' }}>{row.label === 'Total' ? row.value(q).toFixed(2) : row.value(q) || '-'}</td>
-                                      ))}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {quotationList.length > 3 && (
-                  <div style={{ background: 'var(--bg-primary)', borderRadius: '6px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-                    <div style={{ padding: '12px 16px', background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border-color)' }}>
-                      <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '600' }}>Triple Comparison (3 at a time)</h3>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px' }}>
-                      {Array.from({ length: Math.ceil(quotationList.length / 3) }, (_, index) => {
-                        const group = quotationList.slice(index * 3, index * 3 + 3);
-                        return (
-                          <div key={`triple-group-${index}`} style={{ border: '1px solid var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
-                            <div style={{ padding: '10px 12px', background: 'var(--bg-elevated)', fontWeight: 600, fontSize: '13px' }}>
-                              Group {index + 1}: {group.map((q) => q.supplierId?.companyName || 'Supplier').join(' | ')}
-                            </div>
-                            <div style={{ overflowX: 'auto' }}>
-                              <table className="data-table" style={{ width: '100%', minWidth: '900px', borderCollapse: 'collapse' }}>
-                                <thead>
-                                  <tr>
-                                    <th style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>Field</th>
-                                    {group.map((q) => (
-                                      <th key={`${q._id}-triple`} style={{ padding: '10px 16px', textAlign: 'left', background: 'var(--bg-primary)' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                                          <span>{q.supplierId?.companyName || 'Supplier'}</span>
-                                          <button
-                                            onClick={() => handleAwardQuotation(q._id)}
-                                            style={{ background: activeRequest?.awardedQuotationId === q._id ? '#d1fae5' : 'var(--primary-color)', color: activeRequest?.awardedQuotationId === q._id ? '#065f46' : '#fff', border: 'none', borderRadius: '6px', padding: '4px 8px', fontSize: '11px', fontWeight: 600, cursor: 'pointer' }}
-                                          >
-                                            {activeRequest?.awardedQuotationId === q._id ? 'Approved' : 'Approve'}
-                                          </button>
-                                        </div>
-                                      </th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {[
-                                    { label: 'Quote Reference', value: (q) => q.quoteRefNo },
-                                    { label: 'Delivery Date', value: (q) => q.expectedDateOfDelivery },
-                                    { label: 'Payment Terms', value: (q) => q.paymentTerms },
-                                    { label: 'Freight', value: (q) => q.freight },
-                                    { label: 'Loading', value: (q) => q.loading },
-                                    { label: 'Unloading', value: (q) => q.unloading },
-                                    { label: 'Total', value: (q) => {
-                                        const freight = parseNumericField(q?.freight);
-                                        const loading = parseNumericField(q?.loading);
-                                        const unloading = parseNumericField(q?.unloading);
-                                        return freight + loading + unloading;
-                                      }
-                                    }
-                                  ].map((row) => (
-                                    <tr key={`${row.label}-${index}-triple`} style={{ borderTop: '1px solid var(--border-color)' }}>
-                                      <td style={{ padding: '10px 16px', fontWeight: 600, background: 'var(--bg-primary)' }}>{row.label}</td>
-                                      {group.map((q) => (
-                                        <td key={`${q._id}-${row.label}-${index}-triple`} style={{ padding: '10px 16px' }}>{row.label === 'Total' ? row.value(q).toFixed(2) : row.value(q) || '-'}</td>
-                                      ))}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
+              </section>
             )}
 
           </div>

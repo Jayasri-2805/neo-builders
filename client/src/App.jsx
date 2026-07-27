@@ -21,6 +21,9 @@ import AuditLogsPage from './pages/administration/AuditLogsPage';
 import CompanyProfilePage from './pages/settings/CompanyProfilePage';
 import AppearancePage from './pages/settings/AppearancePage';
 import SecurityPage from './pages/settings/SecurityPage';
+import PurchaseOrderPage from './pages/purchase/PurchaseOrderPage';
+import RejectedPurchasePage from './pages/purchase/RejectedPurchasePage';
+import MdApprovalPage from './pages/purchase/MdApprovalPage';
 
 export default function App() {
   return (
@@ -43,6 +46,9 @@ export default function App() {
                     <Route path="/requests" element={<RequestsPage />} />
                     <Route path="/people/:slug" element={<MasterPage />} />
                     <Route path="/masters/:slug" element={<MasterPage />} />
+                    <Route path="/purchase/md-approval/:id" element={<MdApprovalPage />} />
+                    <Route path="/purchase/orders" element={<PurchaseOrderPage />} />
+                    <Route path="/purchase/rejected" element={<RejectedPurchasePage />} />
                     <Route path="/purchase/:slug" element={<MasterPage />} />
                     <Route path="/admin/users" element={<UsersPage />} />
                     <Route path="/admin/roles" element={<RolesPage />} />

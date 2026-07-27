@@ -27,6 +27,7 @@ export const companyApi = {
 
 export const userApi = createMasterApi('users');
 export const materialRequestApi = createMasterApi('material-requests');
+export const purchaseIndentApi = createMasterApi('purchase-indents');
 export const productTypeApi = createMasterApi('product-types');
 export const itemCategoryApi = createMasterApi('item-categories');
 export const itemUomApi = createMasterApi('item-uoms');
@@ -34,6 +35,20 @@ export const taxApi = createMasterApi('taxes');
 export const itemApi = createMasterApi('items');
 export const supplierApi = createMasterApi('suppliers');
 export const quotationApi = createMasterApi('quotations');
+export const comparisonApi = {
+  sendForMdApproval: (materialRequestId) => axiosClient.post('/comparison/send-md-approval', { materialRequestId }),
+  mdApprove: (materialRequestId, payload) => axiosClient.post('/comparison/md-approve', { materialRequestId, ...payload }),
+  mdReject: (materialRequestId, payload) => axiosClient.post('/comparison/md-reject', { materialRequestId, ...payload }),
+};
+
+export const purchaseOrderApi = (() => {
+  const api = createMasterApi('purchase-orders');
+  return {
+    ...api,
+    generate: (payload) => axiosClient.post('/purchase-orders/generate', payload),
+    getPdf: (id) => axiosClient.get(`/purchase-orders/${id}/pdf`),
+  };
+})();
 
 export const uploadAttachment = (formData) => axiosClient.post('/upload-attachment', formData, {
   headers: { 'Content-Type': 'multipart/form-data' }

@@ -118,7 +118,182 @@ button {
 .app-shell {
   display: flex;
   height: 100dvh;
+}
+
+.compare-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.quotation-comparison-section {
+  margin-top: 24px;
+  scroll-margin-top: 24px;
+}
+
+.priority-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  font-weight: 600;
+  font-size: 0.68rem;
+}
+
+.priority-low { background: rgba(34, 197, 94, 0.14); color: #166534; }
+.priority-medium { background: rgba(245, 158, 11, 0.16); color: #92400e; }
+.priority-high { background: rgba(239, 68, 68, 0.14); color: #991b1b; }
+
+.urgent-text {
+  color: #dc2626;
+  font-weight: 600;
+  animation: urgentBlink 1s infinite;
+}
+
+.normal-text {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+@keyframes urgentBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.compare-modal-content {
+  width: 100%;
+  max-width: 1400px;
+  background: var(--bg-elevated);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 92vh;
+}
+
+.compare-modal-header {
+  padding: 20px 24px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.compare-modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.compare-modal-subtitle {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.compare-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.compare-modal-action-btn,
+.compare-modal-close-btn {
+  min-width: 120px;
+  padding: 10px 18px;
+  border-radius: 10px;
+}
+
+.compare-modal-close-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-h);
+}
+
+.compare-modal-body {
+  padding: 18px;
+  overflow-x: auto;
+}
+
+.compare-modal-table {
+  width: 100%;
+  min-width: 1260px;
+  border-collapse: collapse;
+}
+
+.compare-modal-table th,
+.compare-modal-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.compare-modal-table thead th {
+  background: var(--bg-hover);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.compare-modal-table tbody tr:hover {
+  background: rgba(79, 70, 229, 0.05);
+}
+
+.compare-modal-table input[type='number'] {
+  width: 100%;
+  max-width: 100px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.compare-modal-table tfoot td {
+  border-top: 1px solid var(--border);
+  font-weight: 700;
+}
+
+.compare-modal-table tfoot tr:last-child td {
+  background: rgba(79, 70, 229, 0.03);
+}
+
+@media print {
+  body.print-comparison-mode .sidebar,
+  body.print-comparison-mode .header,
+  body.print-comparison-mode .app-content > :not(.quotation-comparison-section) {
+    display: none !important;
+  }
+
+  body.print-comparison-mode .app-content {
+    padding: 0 !important;
+  }
+
+  body.print-comparison-mode .quotation-comparison-section {
+    display: block !important;
+    margin: 0 !important;
+    width: 100%;
+  }
+
+  body.print-comparison-mode .compare-modal-content {
+    box-shadow: none !important;
+    border: none !important;
+    max-width: none !important;
+    max-height: none !important;
+    width: 100%;
+  }
 }
 
 .app-main {
@@ -693,6 +868,13 @@ button {
 
 .btn-block {
   width: 100%;
+}
+
+/* Small compact button variant */
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 6px;
 }
 
 /* ---------- Toolbar / Search ---------- */
@@ -2343,5 +2525,21 @@ textarea:focus {
 
 /* Small filter controls under headers */
 .data-table thead .filters-row th { padding: 6px 8px; }
-.data-table .table-filter { width: 100%; padding: 6px 8px; border-radius: 6px; font-size: 13px; }
+.data-table .table-filter { width: 100%; padding: 8px 10px; border-radius: 8px; font-size: 13px; background: var(--bg-secondary); border: 1px solid var(--border-color); }
 .data-table thead .filters-row th:first-child { padding-left: 12px; }
+
+.purchase-page .data-table {
+  border-radius: 12px;
+}
+
+.purchase-page-header-actions {
+  margin-bottom: 12px;
+}
+
+.purchase-page-action-group button {
+  min-width: 34px;
+}
+
+.purchase-page-action-group button:first-child {
+  margin-right: 2px;
+}

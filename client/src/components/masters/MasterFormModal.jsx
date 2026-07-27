@@ -3,14 +3,22 @@ import { X } from 'lucide-react';
 import { getPath, setPath, formatDateForInput } from '../../utils/objectPath';
 import { createMasterApi } from '../../api/masterApi';
 
-function useRefOptions(field) {
+function useRefOptions(field, moduleKey) {
   const [options, setOptions] = useState([]);
 
   useEffect(() => {
     if (!field.refEndpoint) return;
     const api = createMasterApi(field.refEndpoint);
-    api.listAll().then(({ data }) => setOptions(data.data || [])).catch(() => setOptions([]));
-  }, [field.refEndpoint]);
+    api.listAll()
+      .then(({ data }) => {
+        let items = data.data || [];
+        if (moduleKey === 'purchaseIndents' && field.name === 'indentNo') {
+          items = items.filter((item) => item.pmPdApproval === 'Approved');
+        }
+        setOptions(items);
+      })
+      .catch(() => setOptions([]));
+  }, [field.refEndpoint, field.name, moduleKey]);
 
   return options;
 }
@@ -82,8 +90,8 @@ function MultiselectDropdown({ options, selectedValues, onChange, fieldLabel }) 
   );
 }
 
-function FieldInput({ field, value, onChange, formData }) {
-  const refOptions = (field.type === 'select' || field.type === 'multiselect') && field.refEndpoint ? useRefOptions(field) : null;
+function FieldInput({ field, value, onChange, formData, moduleKey }) {
+  const refOptions = (field.type === 'select' || field.type === 'multiselect') && field.refEndpoint ? useRefOptions(field, moduleKey) : null;
 
   if (field.type === 'textarea') {
     return (
@@ -98,16 +106,6 @@ function FieldInput({ field, value, onChange, formData }) {
 
   if (field.type === 'select') {
     let rawOptions = field.refEndpoint ? refOptions : field.options || [];
-
-    if (field.name === 'productTypeId' && field.refEndpoint === 'product-types') {
-      const allowedLabels = ['none', 'asset', 'consumables'];
-      rawOptions = (rawOptions || []).filter((opt) => {
-        const label = opt && typeof opt === 'object'
-          ? (opt.productType || opt.label || opt.name || '')
-          : String(opt);
-        return allowedLabels.includes(label.toLowerCase());
-      });
-    }
 
     if (field.dependsOn && formData) {
       const dependentValues = getPath(formData, field.dependsOn);
@@ -150,10 +148,14 @@ function FieldInput({ field, value, onChange, formData }) {
       if (field.refEndpoint && value && typeof value === 'object') return value._id ?? '';
       return value;
     })();
+    const selectedOption = options.find((opt) => String(opt._id) === String(selectedValueRaw));
+    const priorityClass = field.name === 'priorityId' && selectedOption?.label
+      ? ` priority-${String(selectedOption.label).toLowerCase()}`
+      : '';
 
     return (
       <select
-        className="form-select"
+        className={`form-select${priorityClass}`}
         value={selectedValueRaw === '' ? '' : JSON.stringify(selectedValueRaw)}
         onChange={(e) => {
           const v = e.target.value;
@@ -345,6 +347,7 @@ export default function MasterFormModal({ config, initialData, onClose, onSaved,
                         value={getPath(formData, field.name)}
                         onChange={(value) => handleChange(field.name, value)}
                         formData={formData}
+                        moduleKey={config.moduleKey}
                       />
                       {errors[field.name] && <span className="field-error">{errors[field.name]}</span>}
                     </div>
